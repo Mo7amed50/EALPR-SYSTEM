@@ -1,0 +1,419 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- Header Section -->
+    <div class="header-section mb-4">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <h1 class="page-title">
+                    <i class="fas fa-images me-2"></i>Uploaded Images
+                </h1>
+                <p class="page-subtitle">View all processed license plate images</p>
+            </div>
+            <div class="col-md-4">
+                <div class="search-box">
+                    <input type="text" class="form-control" id="searchInput" placeholder="Search by plate number...">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filters Section -->
+    <div class="filters-section mb-4">
+        <div class="row">
+            <div class="col-md-3">
+                <select class="form-select" id="statusFilter">
+                    <option value="all">All Status</option>
+                    <option value="authorized">Authorized</option>
+                    <option value="unauthorized">Unauthorized</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <select class="form-select" id="dateFilter">
+                    <option value="all">All Time</option>
+                    <option value="today">Today</option>
+                    <option value="week">This Week</option>
+                    <option value="month">This Month</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-outline-primary w-100" id="refreshBtn">
+                    <i class="fas fa-sync-alt me-2"></i>Refresh
+                </button>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-danger w-100" id="clearBtn">
+                    <i class="fas fa-trash me-2"></i>Clear
+                </button>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-primary w-100" id="exportBtn">
+                    <i class="fas fa-download me-2"></i>Export
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Images Grid -->
+    <div class="row" id="imagesGrid">
+        {% for detection in detections %}
+        <div class="col-xl-3 col-lg-4 col-md-6 mb-4 image-card"
+             data-plate="{{ detection.plate_number }}"
+             data-status="{{ detection.status }}"
+             data-date="{{ detection.timestamp.strftime('%Y-%m-%d') }}">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span class="badge {% if detection.status == 'authorized' %}bg-success{% else %}bg-warning{% endif %}">
+                        {{ detection.status }}
+                    </span>
+                    <small class="text-muted">{{ detection.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
+                </div>
+                <div class="card-body">
+                    <div class="image-container">
+                        <img src="data:image/jpeg;base64,{{ detection.processed_image|b64encode }}"
+                             class="img-fluid rounded"
+                             alt="Processed Image"
+                             data-bs-toggle="modal"
+                             data-bs-target="#imageModal"
+                             data-detection-id="{{ detection.id }}"> <!-- Use string ID -->
+                    </div>
+                    <div class="image-info mt-3">
+                        <h6 class="plate-number">{{ detection.plate_number }}</h6>
+                        {% if detection.visitor_name %}
+                        <p class="visitor-name mb-0">{{ detection.visitor_name }}</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Image Modal -->
+<div class="modal fade" id="imageModal" tabindex="-1" aria-labelledby="imageModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="imageModalLabel">Detection Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Original Image</h6>
+                        <img id="modalOriginalImage" class="img-fluid rounded" alt="Original Image">
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Processed Image</h6>
+                        <img id="modalProcessedImage" class="img-fluid rounded" alt="Processed Image">
+                    </div>
+                </div>
+                <div class="image-details mt-4">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <p><strong>Plate Number:</strong> <span id="modalPlateNumber"></span></p>
+                            <p><strong>Status:</strong> <span id="modalStatus"></span></p>
+                            <p><strong>Confidence:</strong> <span id="modalConfidence"></span></p>
+                        </div>
+                        <div class="col-md-6">
+                            <p><strong>Date:</strong> <span id="modalDate"></span></p>
+                            <p><strong>Time:</strong> <span id="modalTime"></span></p>
+                        </div>
+                    </div>
+                    <!-- Visitor Information Section -->
+                    <div class="visitor-info mt-4" id="visitorInfoSection" style="display: none;">
+                        <h6 class="border-bottom pb-2">Visitor Information</h6>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <p><strong>Name:</strong> <span id="modalVisitorName"></span></p>
+                                <p><strong>ID Number:</strong> <span id="modalVisitorId"></span></p>
+                                <p><strong>License Plate:</strong> <span id="modalVisitorPlate"></span></p>
+                            </div>
+                            <div class="col-md-6">
+                                <p><strong>Entry Time:</strong> <span id="modalEntryTime"></span></p>
+                                <!-- Only show Exit Time if it exists and is not "N/A" -->
+                                <div id="exitTimeContainer" style="display: none;">
+                                    <p><strong>Exit Time:</strong> <span id="modalExitTime"></span></p>
+                                </div>
+                                <p><strong>Department:</strong> <span id="modalDepartment"></span></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // JavaScript to fetch image details and populate the modal
+    $('#imageModal').on('show.bs.modal', function (event) {
+        const button = $(event.relatedTarget); // Button that triggered the modal
+        const detectionId = button.data('detection-id'); // Extract info from data-* attributes
+
+        console.log('Fetching detection details for ID:', detectionId); // Debug log
+
+        // Fetch detection details via API
+        $.get(`/api/detection/${detectionId}`, function(data) {
+            if (!data.success) {
+                console.error('API returned failure:', data.message);
+                alert('Failed to load detection details: ' + data.message);
+                return;
+            }
+
+            // Update modal content
+            $('#modalOriginalImage').attr('src', `data:image/jpeg;base64,${data.original_image}`);
+            $('#modalProcessedImage').attr('src', `data:image/jpeg;base64,${data.processed_image}`);
+            $('#modalPlateNumber').text(data.plate_number || 'N/A');
+
+            // Update status with badge
+            let statusBadgeClass = data.status === 'authorized' ? 'bg-success' : 'bg-danger';
+            let statusText = data.status === 'authorized' ? 'مسجل / مصرح له بالدخول' : 'غير مسجل / غير مصرح له بالدخول';
+            $('#modalStatus').html(`<span class="badge ${statusBadgeClass}">${statusText}</span>`);
+
+            // Format and display date and time separately
+            if (data.timestamp) {
+                const timestamp = new Date(data.timestamp);
+                $('#modalDate').text(timestamp.toLocaleDateString('en-CA')); // YYYY-MM-DD
+                $('#modalTime').text(timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })); // HH:MM AM/PM
+            } else {
+                $('#modalDate').text('-');
+                $('#modalTime').text('-');
+            }
+
+            // Display confidence
+            $('#modalConfidence').text(data.confidence ? `${(data.confidence * 100).toFixed(2)}%` : 'N/A');
+
+            // Handle visitor information
+            const visitorInfo = data.visitor_info || {};
+            if (visitorInfo.name || data.visitor_name) {
+                $('#visitorInfoSection').show();
+                $('#modalVisitorName').text(visitorInfo.name || data.visitor_name || 'N/A');
+                $('#modalVisitorId').text(visitorInfo.visitor_id || 'N/A');
+                $('#modalVisitorPlate').text(visitorInfo.license_plate || data.plate_number || 'N/A');
+                $('#modalEntryTime').text(visitorInfo.entry_time || 'N/A');
+                // Only show Exit Time if it exists and is not "N/A"
+                if (visitorInfo.exit_time && visitorInfo.exit_time !== 'N/A') {
+                    $('#modalExitTime').text(visitorInfo.exit_time);
+                    $('#exitTimeContainer').show();
+                } else {
+                    $('#exitTimeContainer').hide();
+                }
+                $('#modalDepartment').text(visitorInfo.department || 'N/A');
+            } else {
+                $('#visitorInfoSection').hide();
+            }
+        }).fail(function(xhr, status, error) {
+            // Log detailed error for debugging
+            console.error('Error fetching detection details:', {
+                status: status,
+                error: error,
+                response: xhr.responseText
+            });
+            let errorMessage = 'Error fetching detection details.';
+            if (xhr.responseJSON && xhr.responseJSON.message) {
+                errorMessage += ' ' + xhr.responseJSON.message;
+            }
+            alert(errorMessage);
+        });
+    });
+
+    // --- Filtering and Searching ---
+    function applyFilters() {
+        const searchTerm = $('#searchInput').val().toLowerCase();
+        const statusFilter = $('#statusFilter').val();
+        const dateFilter = $('#dateFilter').val();
+
+        $('.image-card').each(function() {
+            const plateNumber = $(this).data('plate').toLowerCase();
+            const status = $(this).data('status');
+            const date = $(this).data('date'); // YYYY-MM-DD format
+
+            let showCard = true;
+
+            // Apply search filter
+            if (searchTerm && !plateNumber.includes(searchTerm)) {
+                showCard = false;
+            }
+
+            // Apply status filter
+            if (statusFilter !== 'all' && status !== statusFilter) {
+                showCard = false;
+            }
+
+            // Apply date filter
+            const today = new Date().toISOString().slice(0, 10);
+            if (dateFilter === 'today' && date !== today) {
+                showCard = false;
+            } else if (dateFilter === 'week') {
+                const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+                if (date < oneWeekAgo) {
+                    showCard = false;
+                }
+            } else if (dateFilter === 'month') {
+                const oneMonthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+                if (date < oneMonthAgo) {
+                    showCard = false;
+                }
+            }
+
+            // Show or hide card
+            if (showCard) {
+                $(this).show();
+            } else {
+                $(this).hide();
+            }
+        });
+    }
+
+    // Attach event listeners to filters and search input
+    $('#searchInput').on('keyup', applyFilters);
+    $('#statusFilter').on('change', applyFilters);
+    $('#dateFilter').on('change', applyFilters);
+    $('#refreshBtn').on('click', function() { location.reload(); }); // Simple refresh
+
+    // --- Export Button ---
+    $('#exportBtn').on('click', function() {
+        const status = $('#statusFilter').val();
+        const dateFilter = $('#dateFilter').val();
+
+        const exportUrl = `/api/export/detections?status=${status}&date_filter=${dateFilter}`;
+
+        const link = document.createElement('a');
+        link.href = exportUrl;
+        link.download = 'detections_export.csv';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    });
+
+    // --- Clear Button ---
+    $('#clearBtn').on('click', function() {
+        if (!confirm('Are you sure you want to clear all detection records? This action cannot be undone.')) {
+            return;
+        }
+        $.ajax({
+            url: '/api/detections/clear',
+            method: 'POST',
+            success: function(response) {
+                if (response.success) {
+                    alert(response.message);
+                    location.reload(); // Refresh the page to show the updated (empty) list
+                } else {
+                    alert(response.message);
+                }
+            },
+            error: function(xhr, status, error) {
+                console.error('Error clearing detection records:', status, error);
+                alert('An error occurred while clearing detection records.');
+            }
+        });
+    });
+</script>
+{% endblock %}
+
+{% block styles %}
+<style>
+    .header-section {
+        background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+        padding: 2rem;
+        border-radius: 10px;
+        color: white;
+        margin-bottom: 2rem;
+    }
+
+    .page-title {
+        font-size: 2rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+    }
+
+    .page-subtitle {
+        font-size: 1.1rem;
+        opacity: 0.8;
+    }
+
+    .search-box input {
+        border-radius: 20px;
+        padding: 0.75rem 1.5rem;
+        border: none;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+
+    .filters-section {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 10px;
+    }
+
+    .image-card {
+        transition: transform 0.3s;
+    }
+
+    .image-card:hover {
+        transform: translateY(-5px);
+    }
+
+    .card {
+        border: none;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        transition: all 0.3s;
+    }
+
+    .card:hover {
+        box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    }
+
+    .image-container {
+        position: relative;
+        padding-top: 75%;
+        overflow: hidden;
+        border-radius: 5px;
+    }
+
+    .image-container img {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        cursor: pointer;
+        transition: transform 0.3s;
+    }
+
+    .image-container img:hover {
+        transform: scale(1.05);
+    }
+
+    .image-info {
+        text-align: center;
+    }
+
+    .plate-number {
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: var(--primary-color);
+    }
+
+    .visitor-name {
+        font-size: 1rem;
+        color: #5a5c69;
+    }
+
+    /* Style for the Clear button */
+    #clearBtn {
+        background-color: #dc3545; /* Red color for danger */
+        border-color: #dc3545;
+    }
+
+    #clearBtn:hover {
+        background-color: #c82333; /* Darker red on hover */
+        border-color: #c82333;
+    }
+</style>
+{% endblock %}

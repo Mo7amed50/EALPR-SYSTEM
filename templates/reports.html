@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}Reports - EALPR{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Reports and Analytics</h2>
+    
+    <div class="row mt-4">
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Total Visitors</h5>
+                    <h2 class="card-text">{{ total_visitors }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Authorized Visitors</h5>
+                    <h2 class="card-text">{{ authorized_visitors }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Authorization Rate</h5>
+                    <h2 class="card-text">{{ (authorized_visitors / total_visitors * 100 if total_visitors > 0 else 0) | round(1) }}%</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Daily Visitor Traffic</h5>
+                    <canvas id="dailyTrafficChart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Peak Hours</h5>
+                    <canvas id="peakHoursChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Export Reports</h5>
+                    <div class="btn-group">
+                        <button class="btn btn-primary" onclick="exportReport('daily')">
+                            <i class="fas fa-file-alt"></i> Daily Report
+                        </button>
+                        <button class="btn btn-primary" onclick="exportReport('weekly')">
+                            <i class="fas fa-file-alt"></i> Weekly Report
+                        </button>
+                        <button class="btn btn-primary" onclick="exportReport('monthly')">
+                            <i class="fas fa-file-alt"></i> Monthly Report
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    // Daily Traffic Chart
+    const dailyTrafficCtx = document.getElementById('dailyTrafficChart').getContext('2d');
+    new Chart(dailyTrafficCtx, {
+        type: 'line',
+        data: {
+            labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+            datasets: [{
+                label: 'Visitors',
+                data: [12, 19, 3, 5, 2, 3, 7],
+                borderColor: 'rgb(75, 192, 192)',
+                tension: 0.1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+
+    // Peak Hours Chart
+    const peakHoursCtx = document.getElementById('peakHoursChart').getContext('2d');
+    new Chart(peakHoursCtx, {
+        type: 'bar',
+        data: {
+            labels: ['8AM', '10AM', '12PM', '2PM', '4PM', '6PM'],
+            datasets: [{
+                label: 'Visitors',
+                data: [12, 19, 3, 5, 2, 3],
+                backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                borderColor: 'rgb(54, 162, 235)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+
+    function exportReport(type) {
+        fetch(`/api/reports/${type}`, {
+            method: 'GET'
+        })
+        .then(response => response.blob())
+        .then(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${type}_report.csv`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+        })
+        .catch(error => {
+            console.error('Error exporting report:', error);
+            alert('An error occurred while exporting the report.');
+        });
+    }
+</script>
+{% endblock %} 

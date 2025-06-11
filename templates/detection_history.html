@@ -1,0 +1,289 @@
+{% extends "base.html" %}
+
+{% block title %}Detection History{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h1 class="h3 mb-4 text-gray-800">Detection History</h1>
+    
+    <!-- Export Controls -->
+    <div class="card shadow mb-4">
+        <div class="card-header py-3 d-flex justify-content-between align-items-center">
+            <h6 class="m-0 font-weight-bold text-primary">Export Controls</h6>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-3">
+                    <div class="form-group">
+                        <label for="exportStatus">Status Filter</label>
+                        <select class="form-control" id="exportStatus">
+                            <option value="all">All Statuses</option>
+                            <option value="authorized">Authorized</option>
+                            <option value="unauthorized">Unauthorized</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="form-group">
+                        <label for="exportDateFilter">Date Range</label>
+                        <select class="form-control" id="exportDateFilter">
+                            <option value="all">All Time</option>
+                            <option value="today">Today</option>
+                            <option value="week">This Week</option>
+                            <option value="month">This Month</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="form-group">
+                        <label for="exportFormat">Format</label>
+                        <select class="form-control" id="exportFormat">
+                            <option value="csv">CSV</option>
+                            <option value="excel">Excel</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="col-md-3 d-flex align-items-end">
+                    <button id="exportBtn" class="btn btn-primary w-100">
+                        <i class="fas fa-download me-2"></i>Export
+                    </button>
+                </div>
+            </div>
+            <div class="row mt-3">
+                <div class="col text-end">
+                    <button id="clearHistoryBtn" class="btn btn-danger">
+                        <i class="fas fa-trash me-2"></i> Clear Detection History
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Detection History Table -->
+    <div class="card shadow mb-4">
+        <div class="card-header py-3">
+            <h6 class="m-0 font-weight-bold text-primary">Recent Detections</h6>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-bordered" id="dataTable" width="100%" cellspacing="0">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Time</th>
+                            <th>Plate Number</th>
+                            <th>Status</th>
+                            <th>Visitor Name</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for detection in detections %}
+                        <tr>
+                            <td>{{ detection.timestamp.strftime('%Y-%m-%d') }}</td>
+                            <td>{{ detection.timestamp.strftime('%H:%M:%S') }}</td>
+                            <td>{{ detection.plate_number }}</td>
+                            <td>
+                                <span class="badge bg-{{ 'success' if detection.status == 'authorized' else 'danger' }}">
+                                    {{ detection.status }}
+                                </span>
+                            </td>
+                            <td>{{ detection.visitor_name or 'N/A' }}</td>
+                            <td>
+                                <button class="btn btn-info btn-sm view-details" data-id="{{ detection.id }}">
+                                    <i class="fas fa-eye"></i> View
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Pagination -->
+            {% if total_pages > 1 %}
+            <div class="d-flex justify-content-center mt-4">
+                <nav aria-label="Page navigation">
+                    <ul class="pagination">
+                        {% if page > 1 %}
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('detection_history', page=page-1) }}" aria-label="Previous">
+                                <span aria-hidden="true">&laquo;</span>
+                            </a>
+                        </li>
+                        {% endif %}
+                        
+                        {% for p in range(max(1, page-2), min(total_pages+1, page+3)) %}
+                        <li class="page-item {{ 'active' if p == page else '' }}">
+                            <a class="page-link" href="{{ url_for('detection_history', page=p) }}">{{ p }}</a>
+                        </li>
+                        {% endfor %}
+                        
+                        {% if page < total_pages %}
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('detection_history', page=page+1) }}" aria-label="Next">
+                                <span aria-hidden="true">&raquo;</span>
+                            </a>
+                        </li>
+                        {% endif %}
+                    </ul>
+                </nav>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Export Progress Modal -->
+<div class="modal fade" id="exportProgressModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Exporting Data</h5>
+            </div>
+            <div class="modal-body">
+                <div class="progress mb-3">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                </div>
+                <p class="text-center" id="exportStatusText">Preparing export...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- View Details Modal -->
+<div class="modal fade" id="viewDetailsModal" tabindex="-1" role="dialog" aria-labelledby="viewDetailsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="viewDetailsModalLabel">Detection Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Original Image</h6>
+                        <img id="originalImage" class="img-fluid" src="" alt="Original Image">
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Processed Image</h6>
+                        <img id="processedImage" class="img-fluid" src="" alt="Processed Image">
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <h6>Details</h6>
+                    <table class="table">
+                        <tr>
+                            <th>Plate Number:</th>
+                            <td id="modalPlateNumber"></td>
+                        </tr>
+                        <tr>
+                            <th>Status:</th>
+                            <td id="modalStatus"></td>
+                        </tr>
+                        <tr>
+                            <th>Timestamp:</th>
+                            <td id="modalTimestamp"></td>
+                        </tr>
+                        <tr>
+                            <th>Visitor Name:</th>
+                            <td id="modalVisitorName"></td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+$(document).ready(function() {
+    // Export button click handler
+    $('#exportBtn').click(function() {
+        const status = $('#exportStatus').val();
+        const dateFilter = $('#exportDateFilter').val();
+        const format = $('#exportFormat').val();
+        
+        // Show progress modal
+        const progressModal = new bootstrap.Modal(document.getElementById('exportProgressModal'));
+        progressModal.show();
+        
+        // Update progress bar
+        const progressBar = $('.progress-bar');
+        progressBar.css('width', '30%');
+        $('#exportStatusText').text('Gathering data...');
+        
+        // Construct export URL
+        const exportUrl = `/api/export/detections?status=${status}&date_filter=${dateFilter}&format=${format}`;
+        
+        // Start export process
+        $.get(exportUrl)
+            .done(function(response) {
+                progressBar.css('width', '100%');
+                $('#exportStatusText').text('Export complete!');
+                
+                // Create download link
+                const link = document.createElement('a');
+                link.href = exportUrl;
+                link.download = `detections_export_${new Date().toISOString().slice(0,10)}.${format}`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                // Close modal after a short delay
+                setTimeout(() => {
+                    progressModal.hide();
+                    progressBar.css('width', '0%');
+                }, 1000);
+            })
+            .fail(function(xhr) {
+                progressBar.css('width', '0%');
+                $('#exportStatusText').text('Export failed: ' + (xhr.responseJSON?.error || 'Unknown error'));
+            });
+    });
+    
+    // Clear History button click handler
+    $('#clearHistoryBtn').click(function() {
+        if (confirm('Are you sure you want to clear ALL detection history? This action cannot be undone.')) {
+            // Send request to backend to clear history
+            $.ajax({
+                url: '/api/detections/clear',
+                type: 'POST', // Or 'DELETE' depending on backend implementation
+                success: function(response) {
+                    if (response.success) {
+                        alert('Detection history cleared successfully!');
+                        // Optionally, refresh the page or update the table
+                        window.location.reload(); 
+                    } else {
+                        alert('Failed to clear history: ' + (response.message || 'Unknown error'));
+                    }
+                },
+                error: function(xhr) {
+                    alert('Failed to clear history: ' + (xhr.responseJSON?.message || xhr.statusText || 'Unknown error'));
+                }
+            });
+        }
+    });
+    
+    // View details button click handler
+    $('.view-details').click(function() {
+        const detectionId = $(this).data('id');
+        $.get(`/api/detection/${detectionId}`, function(data) {
+            // Update modal content
+            $('#originalImage').attr('src', `data:image/jpeg;base64,${data.original_image}`);
+            $('#processedImage').attr('src', `data:image/jpeg;base64,${data.processed_image}`);
+            $('#modalPlateNumber').text(data.plate_number);
+            $('#modalStatus').html(`<span class="badge bg-${data.status === 'authorized' ? 'success' : 'danger'}">${data.status}</span>`);
+            $('#modalTimestamp').text(data.timestamp);
+            $('#modalVisitorName').text(data.visitor_name || 'N/A');
+            
+            // Show modal
+            const viewDetailsModal = new bootstrap.Modal(document.getElementById('viewDetailsModal'));
+            viewDetailsModal.show();
+        });
+    });
+});
+</script>
+{% endblock %} 

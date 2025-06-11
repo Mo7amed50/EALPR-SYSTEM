@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 38
+names: ['0', '1', '2', '3', '4', '5', '6', '7', '7aa', '8', '9', 'Taa', 'Thaa', 'ain', 'alif', 'baa', 'daad', 'daal', 'faa', 'ghayn', 'haa', 'jeem', 'kaaf', 'khaa', 'laam', 'meem', 'noon', 'qaaf', 'raa', 'saad', 'seen', 'sheen', 'taa', 'thaa', 'waw', 'yaa', 'zaal', 'zay']
+
+roboflow:
+  workspace: alyalsayed-vyx6g
+  project: egyptian-car-plates
+  version: 13
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/alyalsayed-vyx6g/egyptian-car-plates/dataset/13
