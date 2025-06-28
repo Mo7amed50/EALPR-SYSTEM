@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+
+{% block title %}Visitors Management - EALPR{% endblock %}
+
+{% block styles %}
+<style>
+    .modal-title {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100%;
+        direction: rtl;
+        text-align: right;
+    }
+    .visitor-card-style {
+        background-color: #ffffff;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .card-header-style {
+        background-color: #212529;
+        color: white;
+        padding: 10px;
+        border-top-left-radius: 8px;
+        border-top-right-radius: 8px;
+        direction: rtl;
+        text-align: center;
+    }
+    .card-body-style {
+        padding: 20px;
+        direction: rtl;
+        text-align: right;
+    }
+    .detection-header {
+        background-color: #e0f7e0;
+        padding: 10px;
+        border-top-left-radius: 8px;
+        border-top-right-radius: 8px;
+        color: #155724;
+        text-align: center;
+        font-weight: bold;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Visitors Management</h2>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addVisitorModal">
+            <i class="fas fa-user-plus"></i> Add New Visitor
+        </button>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Visitor Code</th>
+                            <th>License Plate</th>
+                            <th>Entry Date</th>
+                            <th>Entry Time</th>
+                            <th>Exit Time</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for visitor in visitors %}
+                        <tr>
+                            <td>{{ visitor.name }}</td>
+                            <td>{{ visitor.visitor_code }}</td>
+                            <td>{{ visitor.license_plate }}</td>
+                            <td>{{ visitor.entry_date }}</td>
+                            <td>{{ visitor.entry_time }}</td>
+                            <td>{{ visitor.exit_time if visitor.exit_time else '-' }}</td>
+                            <td>
+                                <span class="badge {% if visitor.authorized %}bg-success{% else %}bg-warning{% endif %}">
+                                    {{ 'Authorized' if visitor.authorized else 'Pending' }}
+                                </span>
+                            </td>
+                            <td>
+                                <button class="btn btn-sm btn-info view-visitor" data-id="{{ visitor.visitor_id }}">
+                                    <i class="fas fa-eye"></i> View
+                                </button>
+                                <button class="btn btn-sm btn-danger delete-visitor" data-id="{{ visitor.visitor_id }}">
+                                    <i class="fas fa-trash"></i> Delete
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add Visitor Modal -->
+<div class="modal fade" id="addVisitorModal" tabindex="-1" aria-labelledby="addVisitorModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="addVisitorModalLabel">Add New Visitor</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="visitorForm">
+                    <div class="mb-3">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-control" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Visitor Code</label>
+                        <input type="text" class="form-control" name="visitor_code" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">License Plate</label>
+                        <input type="text" class="form-control" name="license_plate" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Authorization Status</label>
+                        <select class="form-select" name="authorized">
+                            <option value="false">Pending</option>
+                            <option value="true">Authorized</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="saveVisitor()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- View Visitor Details Modal -->
+<div class="modal fade" id="viewVisitorModal" tabindex="-1" aria-labelledby="viewVisitorModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="viewVisitorModalLabel"><span id="modalVisitorCodeHeader"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="visitor-card-style">
+                    <div class="detection-header">
+                        Detection Results<br>
+                        Detected Plate: <span id="detectedPlate"></span><br>
+                        Confidence: <span id="confidenceScore"></span>%
+                    </div>
+                    <div class="card-header-style text-center">بطاقة الزائرين</div>
+                    <div class="card-body-style">
+                        <!-- Visitor Details Section -->
+                        <div class="row mb-2">  
+                            <div class="col-6 text-end"><strong>اسم الزائر:</strong></div>
+                            <div class="col-6 text-start" id="visitorDetailName"></div>
+                        </div>
+                        <div class="row mb-2">
+                            <div class="col-6 text-end"><strong>كود الزائر:</strong></div>
+                            <div class="col-6 text-start" id="visitorDetailCode"></div>
+                        </div>
+                        <div class="row mb-2">
+                            <div class="col-6 text-end"><strong>لوحة المركبة:</strong></div>
+                            <div class="col-6 text-start" id="visitorDetailLicensePlate"></div>
+                        </div>
+                        <div class="row mb-2">
+                            <div class="col-6 text-end"><strong>التاريخ:</strong></div>
+                            <div class="col-6 text-start" id="visitorDetailDate"></div>
+                        </div>
+                        <div class="row mb-2">
+                            <div class="col-6 text-end"><strong>التوقيت:</strong></div>
+                            <div class="col-6 text-start" id="visitorDetailTime"></div>
+                        </div>
+                        <!-- Responsible and General Department Section -->
+                        <div class="row mt-3">
+                            <div class="col-12 text-center"><strong>الإدارة المسؤولة / الإدارة العامة</strong></div>
+                        </div>
+                        <div class="row mb-2">
+                            <div class="col-6 text-end"><strong>الإدارة المسؤولة:</strong></div>
+                            <div class="col-6 text-start" id="visitorDetailRespDept"></div>
+                        </div>
+                        <div class="row mb-2">
+                            <div class="col-6 text-end"><strong>الإدارة العامة:</strong></div>
+                            <div class="col-6 text-start" id="visitorDetailGenDept"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Handle View button clicks
+        document.querySelectorAll('.view-visitor').forEach(button => {
+            button.addEventListener('click', function() {
+                const visitorId = this.getAttribute('data-id');
+                viewVisitor(visitorId);
+            });
+        });
+
+        // Handle Save button for adding visitor
+        window.saveVisitor = function() {
+            const form = document.getElementById('visitorForm');
+            const formData = new FormData(form);
+            const csrfToken = '{{ csrf_token() if csrf_token() else "" }}';
+
+            if (csrfToken) {
+                formData.append('csrf_token', csrfToken);
+            }
+
+            $.ajax({
+                url: '/api/visitors',
+                type: 'POST',
+                data: formData,
+                contentType: false,
+                processData: false,
+                success: function(response) {
+                    if (response.success) {
+                        $('#addVisitorModal').modal('hide');
+                        alert('Visitor added successfully!');
+                        location.reload(); // Reload to reflect new visitor
+                    } else {
+                        alert('Error adding visitor: ' + (response.message || 'Unknown error'));
+                    }
+                },
+                error: function(xhr, status, error) {
+                    console.error('AJAX Error:', status, error);
+                    console.log('Response:', xhr.responseText);
+                    let errorMessage = 'An error occurred while adding the visitor.';
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        errorMessage = response.message || errorMessage;
+                    } catch (e) {}
+                    alert(errorMessage);
+                }
+            });
+        };
+
+        // Handle Delete button clicks
+        document.querySelectorAll('.delete-visitor').forEach(button => {
+            button.addEventListener('click', function() {
+                const visitorId = this.getAttribute('data-id');
+                if (confirm('Are you sure you want to delete this visitor?')) {
+                    $.ajax({
+                        url: `/api/visitors/${visitorId}`,
+                        type: 'DELETE',
+                        success: function(response) {
+                            if (response.success) {
+                                location.reload(); // Reload to reflect deletion
+                            } else {
+                                alert('Error deleting visitor: ' + response.message);
+                            }
+                        }
+                    });
+                }
+            });
+        });
+
+        window.viewVisitor = function(visitorId) {
+            $.get(`/api/visitors/${visitorId}`, function(response) {
+                if (response.success) {
+                    $('#modalVisitorCodeHeader').text(response.visitor_code || 'N/A');
+                    $('#detectedPlate').text(response.detected_plate || 'N/A');
+                    $('#confidenceScore').text(response.confidence || 'N/A');
+                    $('#visitorDetailName').text(response.name || 'N/A');
+                    $('#visitorDetailCode').text(response.visitor_code || 'N/A');
+                    $('#visitorDetailLicensePlate').text(response.license_plate || 'N/A');
+                    $('#visitorDetailDate').text(response.entry_date || 'N/A');
+                    $('#visitorDetailTime').text(response.entry_time || 'N/A');
+                    $('#visitorDetailRespDept').text(response.responsible_department || 'N/A');
+                    $('#visitorDetailGenDept').text(response.general_department || 'N/A');
+                    $('#viewVisitorModal').modal('show');
+                } else {
+                    alert('Error loading visitor details: ' + response.message);
+                }
+            });
+        };
+    });
+</script>
+{% endblock %}

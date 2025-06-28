@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+
+{% block title %}System Settings - EALPR{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>System Settings</h2>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addSettingModal">
+            <i class="fas fa-plus-circle"></i> Add New Setting
+        </button>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Key</th>
+                            <th>Value</th>
+                            <th>Description</th>
+                            <th>Last Updated</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="settingsTableBody">
+                        {% for setting in settings %}
+                        <tr>
+                            <td>{{ setting.key }}</td>
+                            <td>{{ setting.value }}</td>
+                            <td>{{ setting.description }}</td>
+                            <td>{{ setting.updated_at | to_cairo }}</td>
+                            <td>
+                                <button class="btn btn-sm btn-info edit-setting" data-setting-id="{{ setting.id | string }}" type="button">
+                                    <i class="fas fa-pencil-alt"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add Setting Modal -->
+<div class="modal fade" id="addSettingModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Add New Setting</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="settingForm">
+                    <div class="mb-3">
+                        <label class="form-label">Key</label>
+                        <input type="text" class="form-control" name="key" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Value</label>
+                        <input type="text" class="form-control" name="value" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description</label>
+                        <textarea class="form-control" name="description" rows="3"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="saveSetting()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Setting Modal -->
+<div class="modal fade" id="editSettingModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Setting</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="editSettingForm">
+                    <input type="hidden" name="setting_id" id="edit_setting_id">
+                    <div class="mb-3">
+                        <label class="form-label">Key</label>
+                        <input type="text" class="form-control" name="key" id="edit_key" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Value</label>
+                        <input type="text" class="form-control" name="value" id="edit_value" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description</label>
+                        <textarea class="form-control" name="description" id="edit_description" rows="3" readonly></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="updateSetting()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Edit setting buttons
+        document.querySelectorAll('.edit-setting').forEach(button => {
+            button.addEventListener('click', function() {
+                const settingId = this.getAttribute('data-setting-id');
+                fetch(`/api/settings/${settingId}`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('edit_setting_id').value = settingId;
+                        document.getElementById('edit_key').value = data.setting.key;
+                        document.getElementById('edit_value').value = data.setting.value;
+                        document.getElementById('edit_description').value = data.setting.description;
+                        const editModal = new bootstrap.Modal(document.getElementById('editSettingModal'));
+                        editModal.show();
+                    } else {
+                        alert(data.message || 'Error fetching setting details');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching setting:', error);
+                    alert('An error occurred while fetching the setting.');
+                });
+            });
+        });
+    });
+
+    function saveSetting(event) {
+        if (event) event.preventDefault();
+        const form = document.getElementById('settingForm');
+        const formData = new FormData(form);
+
+        fetch('/api/settings', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Setting created successfully!');
+                // Hide modal after save
+                const addModal = bootstrap.Modal.getInstance(document.getElementById('addSettingModal'));
+                if (addModal) addModal.hide();
+                location.reload();
+            } else {
+                alert(data.message || 'Error creating setting');
+            }
+        })
+        .catch(error => {
+            console.error('Error creating setting:', error);
+            alert('An error occurred while creating the setting.');
+        });
+    }
+
+    function updateSetting(event) {
+        if (event) event.preventDefault();
+        const settingId = document.getElementById('edit_setting_id').value;
+        const value = document.getElementById('edit_value').value;
+
+        if (!settingId || !value) {
+            alert('Setting ID and value are required.');
+            return;
+        }
+
+        fetch(`/api/settings/${settingId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ value: value })
+        })
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(data => {
+                    throw new Error(data.message || `HTTP error! Status: ${response.status}`);
+                });
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.success) {
+                alert('Setting updated successfully!');
+                // Hide modal after save
+                const editModal = bootstrap.Modal.getInstance(document.getElementById('editSettingModal'));
+                if (editModal) editModal.hide();
+                location.reload();
+            } else {
+                alert(data.message || 'Error updating setting');
+            }
+        })
+        .catch(error => {
+            console.error('Error updating setting:', error);
+            alert(`An error occurred while updating the setting: ${error.message}`);
+        });
+    }
+</script>
+{% endblock %}

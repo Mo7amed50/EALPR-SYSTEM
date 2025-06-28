@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+
+{% block title %}Login - EALPR System{% endblock %}
+
+{% block content %}
+<div class="login-wrapper">
+    <div class="login-container">
+        <div class="card">
+            <div class="card-body p-5">
+                <div class="text-center mb-4">
+                    <div class="logo-wrapper mb-3">
+                        <i class="fas fa-car-side fa-3x text-primary"></i>
+                        <div class="logo-rings"></div>
+                    </div>
+                    <h1 class="fw-bold h2 mb-2">Welcome to EALPR</h1>
+                    <p class="text-muted">Egyptian Automatic License Plate Recognition</p>
+                </div>
+                
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category }} alert-dismissible fade show mb-4" role="alert">
+                                <i class="fas fa-{{ 'info-circle' if category == 'info' else 'exclamation-circle' if category == 'warning' else 'check-circle' if category == 'success' else 'times-circle' }} me-2"></i>
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                            </div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+
+                <form method="POST" action="{{ url_for('login') }}" id="loginForm" class="needs-validation" novalidate>
+                    <div class="mb-4">
+                        <label for="username" class="form-label">Username</label>
+                        <div class="input-group has-validation">
+                            <span class="input-group-text bg-light">
+                                <i class="fas fa-user text-primary"></i>
+                            </span>
+                            <input type="text" 
+                                   class="form-control" 
+                                   id="username" 
+                                   name="username" 
+                                   required 
+                                   autocomplete="username"
+                                   pattern="[a-zA-Z0-9_-]{3,20}"
+                                   title="Username should be 3-20 characters long and can contain letters, numbers, underscores and hyphens"
+                                   autofocus>
+                            <div class="invalid-feedback">
+                                Please enter a valid username
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <label for="password" class="form-label">Password</label>
+                            <a href="#" class="text-primary text-decoration-none small" id="togglePassword" role="button">
+                                <i class="fas fa-eye"></i> Show
+                            </a>
+                        </div>
+                        <div class="input-group has-validation">
+                            <span class="input-group-text bg-light">
+                                <i class="fas fa-lock text-primary"></i>
+                            </span>
+                            <input type="password" 
+                                   class="form-control" 
+                                   id="password" 
+                                   name="password" 
+                                   required
+                                   autocomplete="current-password"
+                                   minlength="6">
+                            <div class="invalid-feedback">
+                                Password must be at least 6 characters long
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="rememberMe" name="remember">
+                            <label class="form-check-label user-select-none" for="rememberMe">Keep me signed in</label>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100 btn-lg position-relative">
+                        <span class="d-flex align-items-center justify-content-center">
+                            <i class="fas fa-sign-in-alt me-2"></i>
+                            <span>Sign In</span>
+                        </span>
+                        <div class="loading-spinner position-absolute top-50 start-50 translate-middle d-none">
+                            <div class="spinner-border spinner-border-sm text-light" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block styles %}
+<style>
+    .login-wrapper {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #ffffff;
+        min-height: 100vh;
+        padding: 20px;
+        z-index: 1000;
+    }
+
+    .login-container {
+        width: 100%;
+        max-width: 420px;
+        margin: auto;
+    }
+
+    .card {
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        background: #ffffff;
+        animation: slideIn 0.5s ease-out;
+    }
+
+    .logo-wrapper {
+        position: relative;
+        display: inline-block;
+        padding: 20px;
+    }
+
+    .logo-rings {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 80px;
+        height: 80px;
+        border: 3px solid rgba(13, 110, 253, 0.2);
+        border-radius: 50%;
+        animation: pulse 2s infinite;
+    }
+
+    .logo-rings::before {
+        content: '';
+        position: absolute;
+        top: -10px;
+        left: -10px;
+        right: -10px;
+        bottom: -10px;
+        border: 3px solid rgba(13, 110, 253, 0.1);
+        border-radius: 50%;
+        animation: pulse 2s infinite 0.3s;
+    }
+
+    @keyframes pulse {
+        0% {
+            transform: scale(0.95);
+            opacity: 0.8;
+        }
+        50% {
+            transform: scale(1.05);
+            opacity: 0.5;
+        }
+        100% {
+            transform: scale(0.95);
+            opacity: 0.8;
+        }
+    }
+
+    @keyframes slideIn {
+        from {
+            transform: translateY(-20px);
+            opacity: 0;
+        }
+        to {
+            transform: translateY(0);
+            opacity: 1;
+        }
+    }
+
+    .form-control:focus,
+    .form-check-input:focus {
+        box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.15);
+    }
+
+    .input-group-text {
+        border: none;
+        transition: background-color 0.2s;
+    }
+
+    .form-control {
+        border-left: none;
+    }
+
+    .form-control:focus + .input-group-text {
+        background-color: #e9ecef;
+    }
+
+    .btn-primary {
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(13, 110, 253, 0.2);
+    }
+
+    .btn-primary:active {
+        transform: translateY(0);
+    }
+
+    .loading .loading-spinner {
+        display: block !important;
+    }
+
+    .loading .btn-text {
+        visibility: hidden;
+    }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('loginForm');
+    const submitButton = form.querySelector('button[type="submit"]');
+    const togglePasswordBtn = document.getElementById('togglePassword');
+    const passwordInput = document.getElementById('password');
+
+    // Form validation
+    form.addEventListener('submit', function(event) {
+        if (!form.checkValidity()) {
+            event.preventDefault();
+            event.stopPropagation();
+        } else {
+            submitButton.classList.add('loading');
+            submitButton.disabled = true;
+        }
+        form.classList.add('was-validated');
+    });
+
+    // Password visibility toggle
+    togglePasswordBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
+        passwordInput.setAttribute('type', type);
+        
+        const icon = this.querySelector('i');
+        const text = this.lastChild;
+        
+        if (type === 'text') {
+            icon.classList.remove('fa-eye');
+            icon.classList.add('fa-eye-slash');
+            text.textContent = ' Hide';
+        } else {
+            icon.classList.remove('fa-eye-slash');
+            icon.classList.add('fa-eye');
+            text.textContent = ' Show';
+        }
+    });
+
+    // Auto-hide alerts after 5 seconds
+    const alerts = document.querySelectorAll('.alert');
+    alerts.forEach(alert => {
+        setTimeout(() => {
+            const dismissBtn = alert.querySelector('.btn-close');
+            if (dismissBtn) {
+                dismissBtn.click();
+            }
+        }, 5000);
+    });
+});
+</script>
+{% endblock %}

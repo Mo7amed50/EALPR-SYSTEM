@@ -1,0 +1,5 @@
+names:
+- car_plate
+nc: 1
+train: /kaggle/working/combined_dataset
+val: /kaggle/working/combined_dataset

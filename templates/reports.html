@@ -1,0 +1,287 @@
+{% extends "base.html" %}
+{% block title %}Reports - EALPR{% endblock %}
+{% block content %}
+<div class="container mt-4">
+    <h2>Reports and Analytics</h2>
+
+    <!-- Summary Cards -->
+    <div class="row mt-4">
+        <div class="col-md-4">
+            <div class="card text-white bg-primary mb-3">
+                <div class="card-body">
+                    <h5 class="card-title">Total Visitors</h5>
+                    <h2 class="card-text" data-stat="total_visitors">0</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card text-white bg-success mb-3">
+                <div class="card-body">
+                    <h5 class="card-title">Authorized Visitors</h5>
+                    <h2 class="card-text" data-stat="authorized_visitors">0</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card text-white bg-info mb-3">
+                <div class="card-body">
+                    <h5 class="card-title">Authorization Rate</h5>
+                    <h2 class="card-text" data-stat="auth_rate">0%</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="row mt-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Daily Visitor Traffic</h5>
+                    <canvas id="dailyTrafficChart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Peak Hours</h5>
+                    <canvas id="peakHoursChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Department Statistics</h5>
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover" id="deptStatsTable">
+                            <thead>
+                                <tr>
+                                    <th>Department</th>
+                                    <th>Total</th>
+                                    <th>Auth. Rate</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Daily Status Breakdown</h5>
+                    <canvas id="statusBreakdownChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export Buttons -->
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Export Reports</h5>
+                    <div class="d-flex gap-2 flex-wrap">
+                        <button class="btn btn-success" onclick="exportReport('daily')">
+                            <i class="fas fa-file-excel me-2"></i>Daily Report
+                        </button>
+                        <button class="btn btn-success" onclick="exportReport('weekly')">
+                            <i class="fas fa-file-excel me-2"></i>Weekly Report
+                        </button>
+                        <button class="btn btn-success" onclick="exportReport('monthly')">
+                            <i class="fas fa-file-excel me-2"></i>Monthly Report
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script> 
+<script>
+let dailyTrafficChart;
+let peakHoursChart;
+let statusBreakdownChart;
+
+function initializeCharts(data) {
+    // Update summary stats
+    document.querySelector('[data-stat="total_visitors"]').textContent = data.summary.total_visitors;
+    document.querySelector('[data-stat="authorized_visitors"]').textContent = data.summary.authorized_visitors;
+    document.querySelector('[data-stat="auth_rate"]').textContent =
+        data.summary.authorization_rate.toFixed(1) + '%';
+
+    // Department Table
+    const deptTableBody = document.querySelector('#deptStatsTable tbody');
+    deptTableBody.innerHTML = '';
+    Object.entries(data.department_stats)
+        .sort((a, b) => b[1].total - a[1].total)
+        .forEach(([dept, stats]) => {
+            const authRate = (stats.authorized / stats.total * 100) || 0;
+            deptTableBody.innerHTML += `
+                <tr>
+                    <td>${dept}</td>
+                    <td>${stats.total}</td>
+                    <td>${authRate.toFixed(1)}%</td>
+                </tr>`;
+        });
+
+    // Daily Traffic Chart
+    const dailyCtx = document.getElementById('dailyTrafficChart').getContext('2d');
+    if (dailyTrafficChart) dailyTrafficChart.destroy();
+    dailyTrafficChart = new Chart(dailyCtx, {
+        type: 'line',
+        data: {
+            labels: data.daily_traffic.map(d => d.date),
+            datasets: [{
+                label: 'Visitors',
+                data: data.daily_traffic.map(d => d.count),
+                borderColor: '#4CAF50',
+                tension: 0.1,
+                fill: false
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: { y: { beginAtZero: true } },
+            plugins: {
+                title: { display: true, text: 'Daily Visitor Traffic' },
+                legend: { display: false }
+            }
+        }
+    });
+
+    // Peak Hours Chart
+    const hourCtx = document.getElementById('peakHoursChart').getContext('2d');
+    if (peakHoursChart) peakHoursChart.destroy();
+    const hours = Object.keys(data.peak_hours);
+    const counts = Object.values(data.peak_hours).map(h => h.total);
+    peakHoursChart = new Chart(hourCtx, {
+        type: 'bar',
+        data: {
+            labels: hours,
+            datasets: [{
+                label: 'Visitors',
+                data: counts,
+                backgroundColor: 'rgba(30, 144, 255, 0.6)',
+                borderColor: 'rgb(30, 144, 255)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: { y: { beginAtZero: true } },
+            plugins: {
+                title: { display: true, text: 'Visitor Traffic by Hour' },
+                legend: { display: false }
+            }
+        }
+    });
+
+    // Status Breakdown Chart
+    const statusCtx = document.getElementById('statusBreakdownChart').getContext('2d');
+    if (statusBreakdownChart) statusBreakdownChart.destroy();
+
+    const dates = data.daily_status.map(d => d.date);
+    const authorized = data.daily_status.map(d => d.authorized);
+    const unauthorized = data.daily_status.map(d => d.unauthorized);
+    const pending = data.daily_status.map(d => d.pending);
+
+    statusBreakdownChart = new Chart(statusCtx, {
+        type: 'bar',
+        data: {
+            labels: dates,
+            datasets: [
+                {
+                    label: 'Authorized',
+                    data: authorized,
+                    backgroundColor: 'rgba(76, 175, 80, 0.6)'
+                },
+                {
+                    label: 'Unauthorized',
+                    data: unauthorized,
+                    backgroundColor: 'rgba(244, 67, 54, 0.6)'
+                },
+                {
+                    label: 'Pending',
+                    data: pending,
+                    backgroundColor: 'rgba(255, 193, 7, 0.6)'
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                x: { stacked: true },
+                y: { stacked: true, beginAtZero: true }
+            },
+            plugins: {
+                title: { display: true, text: 'Daily Visitor Status Distribution' }
+            }
+        }
+    });
+}
+
+function loadAnalytics() {
+    fetch('/api/analytics/visitor-stats')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                initializeCharts(data);
+            } else {
+                alert('Failed to load analytics.');
+            }
+        })
+        .catch(err => {
+            console.error('Error fetching analytics:', err);
+            alert('Network error while loading analytics.');
+        });
+}
+
+function exportReport(type) {
+    const button = event.target.closest('button');
+    const originalText = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Generating...';
+    
+    fetch(`/api/reports/${type}`)
+        .then(response => {
+            if (!response.ok) throw new Error('Download failed');
+            return response.blob();
+        })
+        .then(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${type}_report.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            a.remove();
+        })
+        .catch(err => {
+            alert('An error occurred during export.');
+            console.error('Export error:', err);
+        })
+        .finally(() => {
+            button.disabled = false;
+            button.innerHTML = originalText;
+        });
+}
+
+// Auto-refresh analytics every 5 minutes
+document.addEventListener('DOMContentLoaded', function () {
+    loadAnalytics();
+    setInterval(loadAnalytics, 5 * 60 * 1000); // Refresh every 5 minutes
+});
+</script>
+{% endblock %}
