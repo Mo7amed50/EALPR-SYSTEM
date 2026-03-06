@@ -1,7 +1,7 @@
 # models.py
 
 from mongoengine import (
-    connect, Document, StringField,
+    Document, StringField,
     DateTimeField, BooleanField, SequenceField,
     ReferenceField, CASCADE, IntField,
     FloatField, BinaryField 
@@ -14,11 +14,6 @@ import pytz
 
 
 EGYPT_TZ = pytz.timezone('Africa/Cairo')
-
-
-# الاتصال بقاعدة البيانات
-connect(MONGODB_DB_NAME, host=MONGODB_URI, alias='default')
-
 
 class User(Document, UserMixin):
     username = StringField(required=True, unique=True)
@@ -53,6 +48,7 @@ class Visitor(Document):
     visitor_code = StringField(unique=True)  # الكود الجديد مثل: V001, V002...
 
     name = StringField(required=True)
+    id_number = StringField()  # optional national ID, used by some scripts
     license_plate = StringField(required=True, unique=True)
 
     entry_datetime_utc = DateTimeField(default=datetime.utcnow)  # التاريخ بالتوقيت العالمي

@@ -5,7 +5,19 @@ from config import MONGODB_URI, MONGODB_DB_NAME
 
 class DatabaseManager:
     def __init__(self):
-        connect(MONGODB_DB_NAME, host=MONGODB_URI)
+        # Standalone utility; use same alias/timeouts as main app
+        try:
+            disconnect(alias="default")
+        except Exception:
+            pass
+        connect(
+            MONGODB_DB_NAME,
+            host=MONGODB_URI,
+            alias="default",
+            serverSelectionTimeoutMS=30000,
+            connectTimeoutMS=30000,
+            socketTimeoutMS=30000,
+        )
     
     def __del__(self):
         disconnect()

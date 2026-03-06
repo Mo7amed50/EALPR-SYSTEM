@@ -21,8 +21,7 @@ from PIL import Image, ImageFont, ImageDraw
 import base64
 import re
 import arabic_reshaper
-from bidi.algorithm import get_display
-from tensorflow import keras
+import bidi.algorithm
 from models import User, Visitor, UserActivity, SystemSettings, DetectionResult
 from mongoengine import connect
 import csv
@@ -60,11 +59,20 @@ app.config['SECRET_KEY'] = SECRET_KEY
 # Initialize SocketIO
 socketio = SocketIO(app)
 
-# Connect to MongoDB
+# Connect to MongoDB (single central connection)
 print("Connecting to MongoDB...")
-connect(MONGODB_DB_NAME, host=MONGODB_URI)
-print("MongoDB connection test:", Visitor.objects.count())  # Test connection
-print("Connected to MongoDB successfully!")
+try:
+    connect(
+        MONGODB_DB_NAME,
+        host=MONGODB_URI,
+        alias='default',
+        serverSelectionTimeoutMS=5000
+    )
+    print("MongoDB connection test:", User.objects.count())
+    print("Connected to MongoDB successfully!")
+except Exception as e:
+    print(f"MongoDB connection error in app.py: {e}")
+    raise
 
 # Configure Flask-Login
 login_manager = LoginManager()
@@ -128,7 +136,7 @@ def draw_arabic_text(image, text, position, color):
     Draw Arabic text on an image with background rectangle
     """
     reshaped_text = arabic_reshaper.reshape(text)
-    bidi_text = get_display(reshaped_text)
+    bidi_text = bidi.algorithm.get_display(reshaped_text)
     img_pil = Image.fromarray(image)
     draw = ImageDraw.Draw(img_pil)
     font = ImageFont.truetype(font_path, 40)

@@ -7,7 +7,18 @@ from config import MONGODB_URI, MONGODB_DB_NAME
 
 def cleanup_database():
     print("🔌 Connecting to MongoDB...")
-    connect(MONGODB_DB_NAME, host=MONGODB_URI)
+    try:
+        disconnect(alias="default")
+    except Exception:
+        pass
+    connect(
+        MONGODB_DB_NAME,
+        host=MONGODB_URI,
+        alias="default",
+        serverSelectionTimeoutMS=30000,
+        connectTimeoutMS=30000,
+        socketTimeoutMS=30000,
+    )
 
     try:
         client = get_connection()
