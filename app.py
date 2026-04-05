@@ -129,7 +129,7 @@ def create_default_admin():
 create_default_admin()
 
 # Define font path
-font_path = r"D:\GP\alfont_com_arial-1.ttf"
+font_path = "./alfont_com_arial-1.ttf"
 
 def draw_arabic_text(image, text, position, color):
     """
