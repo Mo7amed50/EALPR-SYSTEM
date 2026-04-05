@@ -59,22 +59,40 @@ app.config['SECRET_KEY'] = SECRET_KEY
 # Initialize SocketIO
 socketio = SocketIO(app)
 
-# Connect to MongoDB (single central connection)
-print("Connecting to MongoDB...")
-try:
-    connect(
-        MONGODB_DB_NAME,
-        host=MONGODB_URI,
-        alias='default',
-        serverSelectionTimeoutMS=30000,
-        connectTimeoutMS=20000,
-        socketTimeoutMS=20000
-    )
-    print("MongoDB connection test:", User.objects.count())
-    print("Connected to MongoDB successfully!")
-except Exception as e:
-    print(f"MongoDB connection error in app.py: {e}")
-    raise
+DB_ENABLED = False
+
+import time
+from mongoengine import connect, get_connection
+
+def connect_mongodb(max_retries=3):
+    global DB_ENABLED
+    for attempt in range(max_retries):
+        try:
+            print(f"Connecting to MongoDB (attempt {attempt + 1}/{max_retries})...")
+            connect(
+                MONGODB_DB_NAME,
+                host=MONGODB_URI,
+                alias='default',
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000
+            )
+            # Test connection
+            user_count = User.objects.count()
+            print(f"MongoDB connected! Users: {user_count}")
+            DB_ENABLED = True
+            return True
+        except Exception as e:
+            print(f"MongoDB attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                print("All connection attempts failed. Continuing without DB (read-only mode).")
+                DB_ENABLED = False
+                return False
+
+# Connect with retry
+connect_mongodb()
 
 # Configure Flask-Login
 login_manager = LoginManager()

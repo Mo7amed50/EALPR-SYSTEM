@@ -62,7 +62,7 @@ ENHANCEMENT_SETTINGS = {
 # MongoDB Configuration - use your NEW Atlas cluster by default
 MONGODB_URI = os.getenv(
     'MONGODB_URI',
-    'mongodb+srv://classtrack123_db_user:OshPazqANUIppO5Q@cluster0.aazoldv.mongodb.net/ealpr_db?retryWrites=true&w=majority&appName=Cluster0'
+    'mongodb+srv://mmahmoud15004_db_user:aS0QuDtsZTBoVdQv@cluster1.9nfvdsl.mongodb.net/?appName=Cluster1'
 )
 MONGODB_DB_NAME = os.getenv('MONGODB_DB_NAME', 'ealpr_db')
 
