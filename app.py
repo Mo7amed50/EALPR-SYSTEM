@@ -66,7 +66,9 @@ try:
         MONGODB_DB_NAME,
         host=MONGODB_URI,
         alias='default',
-        serverSelectionTimeoutMS=5000
+        serverSelectionTimeoutMS=30000,
+        connectTimeoutMS=20000,
+        socketTimeoutMS=20000
     )
     print("MongoDB connection test:", User.objects.count())
     print("Connected to MongoDB successfully!")
