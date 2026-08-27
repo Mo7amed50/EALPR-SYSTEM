@@ -39,6 +39,7 @@ TEMP_DIR=temp
 SAVE_DIR=detected_plates
 TESSERACT_OCR=Path/To/Tesseract/OCR
 
+If MongoDB is unavailable, the app will still launch in offline/read-only mode, but most database operations will be disabled.
 
 Initialize MongoDB:Ensure MongoDB is installed and running. Run the database initialization script:
 python init_database.py
