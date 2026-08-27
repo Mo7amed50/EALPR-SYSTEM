@@ -9,7 +9,6 @@ from mongoengine import (
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 from datetime import datetime
-from config import MONGODB_URI, MONGODB_DB_NAME
 import pytz 
 
 
@@ -32,7 +31,7 @@ class User(Document, UserMixin):
         return check_password_hash(self.password, password)
 
     def get_id(self):
-        return str(self.id)
+        return str(getattr(self, "id", ""))
 
     @property
     def is_authenticated(self):
@@ -98,16 +97,16 @@ class SystemSettings(Document):
 
     @staticmethod
     def get_setting(key, default=None):
-        setting = SystemSettings.objects(key=key).first()
+        setting = getattr(SystemSettings, "objects")(key=key).first()
         return setting.value if setting else default
 
     @staticmethod
     def set_setting(key, value, description=None, user_id=None):
-        setting = SystemSettings.objects(key=key).first()
+        setting = getattr(SystemSettings, "objects")(key=key).first()
         if setting:
             setting.value = value
             if user_id:
-                setting.updated_by = User.objects(id=user_id).first()
+                setting.updated_by = getattr(User, "objects")(id=user_id).first()
             if description:
                 setting.description = description
             setting.updated_at = datetime.utcnow()
@@ -118,7 +117,7 @@ class SystemSettings(Document):
                 description=description
             )
             if user_id:
-                setting.updated_by = User.objects(id=user_id).first()
+                setting.updated_by = getattr(User, "objects")(id=user_id).first()
         setting.save()
         return setting
 
@@ -132,6 +131,10 @@ class DetectionResult(Document):
     processed_by = ReferenceField(User)
     original_image = BinaryField()
     processed_image = BinaryField()
+    original_image_path = StringField()
+    processed_image_path = StringField()
+    ocr_confidence = FloatField()
+
 
     meta = {
         'indexes': ['plate_number', 'timestamp', 'status']

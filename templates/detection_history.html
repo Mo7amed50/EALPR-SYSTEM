@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="container-fluid">
-    <h1 class="h3 mb-4 text-gray-800">Detection History</h1>
+    <h1 class="page-title mb-4"><i class="fas fa-history me-2 text-accent"></i>Detection History</h1>
     
     <!-- Export Controls -->
     <div class="card shadow mb-4">
@@ -107,7 +107,7 @@
                     <ul class="pagination">
                         {% if page > 1 %}
                         <li class="page-item">
-                            <a class="page-link" href="{{ url_for('detection_history', page=page-1) }}" aria-label="Previous">
+                            <a class="page-link" href="{{ url_for('detection.detection_history', page=page-1) }}" aria-label="Previous">
                                 <span aria-hidden="true">&laquo;</span>
                             </a>
                         </li>
@@ -115,13 +115,13 @@
                         
                         {% for p in range(max(1, page-2), min(total_pages+1, page+3)) %}
                         <li class="page-item {{ 'active' if p == page else '' }}">
-                            <a class="page-link" href="{{ url_for('detection_history', page=p) }}">{{ p }}</a>
+                            <a class="page-link" href="{{ url_for('detection.detection_history', page=p) }}">{{ p }}</a>
                         </li>
                         {% endfor %}
                         
                         {% if page < total_pages %}
                         <li class="page-item">
-                            <a class="page-link" href="{{ url_for('detection_history', page=page+1) }}" aria-label="Next">
+                            <a class="page-link" href="{{ url_for('detection.detection_history', page=page+1) }}" aria-label="Next">
                                 <span aria-hidden="true">&raquo;</span>
                             </a>
                         </li>

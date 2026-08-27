@@ -60,6 +60,8 @@ def init_database():
         print("✓ DetectionResult collection created")
 
         # Create default admin user if not exists
+        from config import DEFAULT_ADMIN_PASSWORD
+
         print("Creating default admin user...")
         if not User.objects(username='admin').first():
             admin = User(
@@ -67,9 +69,11 @@ def init_database():
                 is_admin=True,
                 created_at=datetime.utcnow()
             )
-            admin.set_password('admin123')
+            admin.set_password(DEFAULT_ADMIN_PASSWORD)
             admin.save()
             print("✓ Default admin user created")
+            if DEFAULT_ADMIN_PASSWORD == 'admin123':
+                print("Warning: default admin password is still the insecure fallback 'admin123'. Change DEFAULT_ADMIN_PASSWORD before production.")
 
         # Create default system settings
         print("Creating default system settings...")
