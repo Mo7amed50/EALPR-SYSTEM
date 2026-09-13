@@ -34,6 +34,30 @@
         </div>
     </div>
 
+    <div class="system-health-row" aria-label="System health overview">
+        <div class="health-pill {% if db_enabled %}health-pill-ok{% else %}health-pill-offline{% endif %}">
+            <span class="health-dot"></span>
+            <div>
+                <small>System</small>
+                <strong>{% if db_enabled %}Operational{% else %}Offline mode{% endif %}</strong>
+            </div>
+        </div>
+        <div class="health-pill health-pill-warn">
+            <span class="health-dot"></span>
+            <div>
+                <small>Capture</small>
+                <strong>Ready</strong>
+            </div>
+        </div>
+        <div class="health-pill health-pill-ok">
+            <span class="health-dot"></span>
+            <div>
+                <small>Alerts</small>
+                <strong>Low</strong>
+            </div>
+        </div>
+    </div>
+
     <!-- Stats Section -->
     <div class="row mb-4">
         <div class="col-xl-3 col-md-6 mb-3">
@@ -500,8 +524,8 @@
                             // Bind quick add visitor event
                             btnQuickAddVisitor.onclick = function () {
                                 quickAddLicensePlate.value = res.plate_text;
-                                const modal = new bootstrap.Modal(document.getElementById('quickAddVisitorModal'));
-                                modal.show();
+                                const modal = getOrCreateModal('quickAddVisitorModal');
+                                if (modal) modal.show();
                             };
                         }
                         updateDashboardStats();
@@ -538,7 +562,8 @@
                 success: function (res) {
                     if (res.success) {
                         showNotification('Success', 'Visitor registered successfully', 'authorized');
-                        bootstrap.Modal.getInstance(document.getElementById('quickAddVisitorModal')).hide();
+                        const modal = getOrCreateModal('quickAddVisitorModal');
+                        if (modal) modal.hide();
                         quickAddVisitorForm.reset();
                         // Refetch image recognition state if active to update display status
                         uploadForm.dispatchEvent(new Event('submit'));
@@ -546,6 +571,7 @@
                         showNotification('Error', res.message || 'Could not save visitor', 'unauthorized');
                     }
                 },
+
                 error: function () {
                     showNotification('Error', 'Network error registering visitor', 'unauthorized');
                 }

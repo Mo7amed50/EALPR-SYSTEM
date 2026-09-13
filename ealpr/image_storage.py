@@ -32,9 +32,17 @@ def read_image_bytes(path: str | None, fallback: bytes | None = None) -> bytes |
     return fallback
 
 
+def get_image_file_path(path: str | None) -> str | None:
+    """Return verified absolute path if image file exists on disk."""
+    if path and os.path.isfile(path):
+        return os.path.abspath(path)
+    return None
+
+
 def encode_detection_image(path: str | None, fallback: bytes | None = None) -> str:
     data = read_image_bytes(path, fallback)
     if not data:
         return ""
     import base64
     return base64.b64encode(data).decode("utf-8")
+

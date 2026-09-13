@@ -15,7 +15,7 @@ from flask_login import login_required
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-from ealpr.extensions import DB_ENABLED
+from ealpr import extensions
 from ealpr.decorators import db_required
 
 from models import Visitor
@@ -26,7 +26,7 @@ reports_bp = Blueprint("reports", __name__)
 
 @reports_bp.before_request
 def check_db_available():
-    if not DB_ENABLED:
+    if not extensions.DB_ENABLED:
         if request.path.startswith("/api/") or request.is_json:
             return jsonify({
                 "success": False,
@@ -50,7 +50,7 @@ def reports():
 @db_required
 def get_visitor_stats():
     try:
-        end_date = datetime.now()
+        end_date = datetime.utcnow()
         month_start = end_date - timedelta(days=30)
 
         total_visitors = Visitor.objects.count()
@@ -64,7 +64,7 @@ def get_visitor_stats():
         for i in range(7):
             day = end_date - timedelta(days=i)
             day_start = day.replace(hour=0, minute=0, second=0)
-            day_end = day.replace(hour=23, minute=59, second=59)
+            day_end = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
             count = Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end).count()
             auth = Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end, status="authorized").count()
@@ -154,11 +154,11 @@ def export_analytics_excel():
         # Daily traffic sheet (last 30 days)
         ws_daily = wb.create_sheet("Daily Traffic")
         ws_daily.append(["Date", "Day", "Total", "Authorized", "Unauthorized", "Pending"])
-        end_date = datetime.now()
+        end_date = datetime.utcnow()
         for i in range(30):
             day = end_date - timedelta(days=i)
             day_start = day.replace(hour=0, minute=0, second=0)
-            day_end = day.replace(hour=23, minute=59, second=59)
+            day_end = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             ws_daily.append([
                 day.strftime("%Y-%m-%d"),
                 day.strftime("%a"),
@@ -240,7 +240,7 @@ def export_report(type):
             top=Side(style="thin"), bottom=Side(style="thin"),
         )
 
-        end_date = datetime.now()
+        end_date = datetime.utcnow()
         if type == "daily":
             start_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
             title = f"Daily Visitor Report - {end_date.strftime('%Y-%m-%d')}"

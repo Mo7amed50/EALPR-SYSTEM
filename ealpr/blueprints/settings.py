@@ -13,7 +13,7 @@ from flask import Blueprint, render_template, request, jsonify, redirect, url_fo
 from flask_login import login_required, current_user
 from bson.objectid import ObjectId, InvalidId
 
-from ealpr.extensions import DB_ENABLED
+from ealpr import extensions
 from ealpr.decorators import db_required
 
 from models import SystemSettings
@@ -24,7 +24,7 @@ settings_bp = Blueprint("settings", __name__)
 
 @settings_bp.before_request
 def check_db_available():
-    if not DB_ENABLED:
+    if not extensions.DB_ENABLED:
         if request.path.startswith("/api/") or request.is_json:
             return jsonify({
                 "success": False,
@@ -74,7 +74,9 @@ def update_detection_settings():
     """Bulk-update specific well-known settings by key name."""
     if not current_user.is_admin:
         return jsonify({"success": False, "message": "Access denied"}), 403
-    data = request.get_json()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "A JSON object is required"}), 400
     try:
         if "confidence_threshold" in data:
             SystemSettings.objects(key="confidence_threshold").update_one(
@@ -91,6 +93,34 @@ def update_detection_settings():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+@settings_bp.route("/api/settings", methods=["POST"])
+@login_required
+@db_required
+def create_setting():
+    if not current_user.is_admin:
+        return jsonify({"success": False, "message": "Access denied"}), 403
+    data = request.form if request.form else request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "Setting data is required"}), 400
+    key = str(data.get("key", "")).strip()
+    value = data.get("value")
+    if not key or value is None:
+        return jsonify({"success": False, "message": "Key and value are required"}), 400
+    if SystemSettings.objects(key=key).first():
+        return jsonify({"success": False, "message": "Setting key already exists"}), 409
+    try:
+        setting = SystemSettings(
+            key=key,
+            value=str(value),
+            description=str(data.get("description", "")).strip(),
+            updated_by=current_user,
+        )
+        setting.save()
+        return jsonify({"success": True, "setting": {"id": str(setting.id)}}), 201
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Error creating setting: {e}"}), 500
 
 
 @settings_bp.route("/api/settings/<string:setting_id>", methods=["GET"])
@@ -113,6 +143,8 @@ def get_setting(setting_id):
                 "updated_at": utc_to_cairo(setting.updated_at),
             },
         })
+    except InvalidId:
+        return jsonify({"success": False, "message": "Invalid setting ID format"}), 400
     except Exception as e:
         return jsonify({"success": False, "message": f"Error fetching setting: {e}"}), 500
 
@@ -127,12 +159,16 @@ def update_setting(setting_id):
         setting = SystemSettings.objects(id=ObjectId(setting_id)).first()
         if not setting:
             return jsonify({"success": False, "message": "Setting not found"}), 404
-        data = request.get_json()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "A JSON object is required"}), 400
         if "value" in data:
-            setting.value = data["value"]
-            setting.updated_by = current_user.id
+            setting.value = str(data["value"])
+            setting.updated_by = current_user
         setting.save()
         return jsonify({"success": True})
+    except InvalidId:
+        return jsonify({"success": False, "message": "Invalid setting ID format"}), 400
     except Exception as e:
         return jsonify({"success": False, "message": f"Error updating setting: {e}"}), 500
 
@@ -149,5 +185,7 @@ def delete_setting(setting_id):
             return jsonify({"success": False, "message": "Setting not found"}), 404
         setting.delete()
         return jsonify({"success": True})
+    except InvalidId:
+        return jsonify({"success": False, "message": "Invalid setting ID format"}), 400
     except Exception as e:
         return jsonify({"success": False, "message": f"Error deleting setting: {e}"}), 500

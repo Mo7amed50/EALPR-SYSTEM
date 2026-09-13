@@ -3,7 +3,7 @@ decorators.py — Decorators to handle DB-offline/read-only mode.
 """
 from functools import wraps
 from flask import jsonify, flash, redirect, url_for, request
-from ealpr.extensions import DB_ENABLED
+from ealpr import extensions
 
 def db_required(f):
     """
@@ -12,7 +12,7 @@ def db_required(f):
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not DB_ENABLED:
+        if not extensions.DB_ENABLED:
             if request.is_json or request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.path.startswith('/api/'):
                 return jsonify({
                     'success': False,

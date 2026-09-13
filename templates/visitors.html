@@ -12,12 +12,14 @@
         direction: rtl;
         text-align: right;
     }
+
     .visitor-card-style {
         background-color: #ffffff;
         border: 1px solid #dee2e6;
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     }
+
     .card-header-style {
         background-color: #212529;
         color: white;
@@ -27,11 +29,13 @@
         direction: rtl;
         text-align: center;
     }
+
     .card-body-style {
         padding: 20px;
         direction: rtl;
         text-align: right;
     }
+
     .detection-header {
         background-color: #e0f7e0;
         padding: 10px;
@@ -79,7 +83,8 @@
                             <td>{{ visitor.entry_time }}</td>
                             <td>{{ visitor.exit_time if visitor.exit_time else '-' }}</td>
                             <td>
-                                <span class="badge {% if visitor.authorized %}bg-success{% else %}bg-warning{% endif %}">
+                                <span
+                                    class="badge {% if visitor.authorized %}bg-success{% else %}bg-warning{% endif %}">
                                     {{ 'Authorized' if visitor.authorized else 'Pending' }}
                                 </span>
                             </td>
@@ -102,7 +107,7 @@
 
 <!-- Add Visitor Modal -->
 <div class="modal fade" id="addVisitorModal" tabindex="-1" aria-labelledby="addVisitorModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="addVisitorModalLabel">Add New Visitor</h5>
@@ -141,7 +146,7 @@
 
 <!-- View Visitor Details Modal -->
 <div class="modal fade" id="viewVisitorModal" tabindex="-1" aria-labelledby="viewVisitorModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="viewVisitorModalLabel"><span id="modalVisitorCodeHeader"></span></h5>
@@ -157,7 +162,7 @@
                     <div class="card-header-style text-center">بطاقة الزائرين</div>
                     <div class="card-body-style">
                         <!-- Visitor Details Section -->
-                        <div class="row mb-2">  
+                        <div class="row mb-2">
                             <div class="col-6 text-end"><strong>اسم الزائر:</strong></div>
                             <div class="col-6 text-start" id="visitorDetailName"></div>
                         </div>
@@ -202,24 +207,19 @@
 
 {% block scripts %}
 <script>
-    document.addEventListener('DOMContentLoaded', function() {
+    document.addEventListener('DOMContentLoaded', function () {
         // Handle View button clicks
         document.querySelectorAll('.view-visitor').forEach(button => {
-            button.addEventListener('click', function() {
+            button.addEventListener('click', function () {
                 const visitorId = this.getAttribute('data-id');
                 viewVisitor(visitorId);
             });
         });
 
         // Handle Save button for adding visitor
-        window.saveVisitor = function() {
+        window.saveVisitor = function () {
             const form = document.getElementById('visitorForm');
             const formData = new FormData(form);
-            const csrfToken = '{{ csrf_token() if csrf_token() else "" }}';
-
-            if (csrfToken) {
-                formData.append('csrf_token', csrfToken);
-            }
 
             $.ajax({
                 url: '/api/visitors',
@@ -227,50 +227,53 @@
                 data: formData,
                 contentType: false,
                 processData: false,
-                success: function(response) {
+                success: function (response) {
                     if (response.success) {
-                        $('#addVisitorModal').modal('hide');
-                        alert('Visitor added successfully!');
-                        location.reload(); // Reload to reflect new visitor
+                        const modal = getOrCreateModal('addVisitorModal');
+                        if (modal) modal.hide();
+                        showNotification('Success', 'Visitor added successfully!', 'authorized');
+                        setTimeout(() => location.reload(), 800);
                     } else {
-                        alert('Error adding visitor: ' + (response.message || 'Unknown error'));
+                        showNotification('Error', 'Error adding visitor: ' + (response.message || 'Unknown error'), 'unauthorized');
                     }
                 },
-                error: function(xhr, status, error) {
-                    console.error('AJAX Error:', status, error);
-                    console.log('Response:', xhr.responseText);
+                error: function (xhr, status, error) {
                     let errorMessage = 'An error occurred while adding the visitor.';
                     try {
                         const response = JSON.parse(xhr.responseText);
                         errorMessage = response.message || errorMessage;
-                    } catch (e) {}
-                    alert(errorMessage);
+                    } catch (e) { }
+                    showNotification('Error', errorMessage, 'unauthorized');
                 }
             });
         };
 
         // Handle Delete button clicks
         document.querySelectorAll('.delete-visitor').forEach(button => {
-            button.addEventListener('click', function() {
+            button.addEventListener('click', function () {
                 const visitorId = this.getAttribute('data-id');
                 if (confirm('Are you sure you want to delete this visitor?')) {
                     $.ajax({
                         url: `/api/visitors/${visitorId}`,
                         type: 'DELETE',
-                        success: function(response) {
+                        success: function (response) {
                             if (response.success) {
-                                location.reload(); // Reload to reflect deletion
+                                showNotification('Success', 'Visitor deleted successfully!', 'authorized');
+                                setTimeout(() => location.reload(), 800);
                             } else {
-                                alert('Error deleting visitor: ' + response.message);
+                                showNotification('Error', 'Error deleting visitor: ' + response.message, 'unauthorized');
                             }
+                        },
+                        error: function () {
+                            showNotification('Error', 'An error occurred while deleting visitor.', 'unauthorized');
                         }
                     });
                 }
             });
         });
 
-        window.viewVisitor = function(visitorId) {
-            $.get(`/api/visitors/${visitorId}`, function(response) {
+        window.viewVisitor = function (visitorId) {
+            $.get(`/api/visitors/${visitorId}`, function (response) {
                 if (response.success) {
                     $('#modalVisitorCodeHeader').text(response.visitor_code || 'N/A');
                     $('#detectedPlate').text(response.detected_plate || 'N/A');
@@ -282,10 +285,14 @@
                     $('#visitorDetailTime').text(response.entry_time || 'N/A');
                     $('#visitorDetailRespDept').text(response.responsible_department || 'N/A');
                     $('#visitorDetailGenDept').text(response.general_department || 'N/A');
-                    $('#viewVisitorModal').modal('show');
+
+                    const modal = getOrCreateModal('viewVisitorModal');
+                    if (modal) modal.show();
                 } else {
-                    alert('Error loading visitor details: ' + response.message);
+                    showNotification('Error', 'Error loading visitor details: ' + response.message, 'unauthorized');
                 }
+            }).fail(function () {
+                showNotification('Error', 'Could not load visitor details.', 'unauthorized');
             });
         };
     });

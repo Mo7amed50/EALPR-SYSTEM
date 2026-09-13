@@ -89,6 +89,133 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.page-header {
+  gap: 16px;
+  margin-bottom: 1.25rem;
+}
+
+.page-title {
+  margin-bottom: 0.2rem;
+  letter-spacing: -0.04em;
+}
+
+.page-subtitle {
+  margin-bottom: 0;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.system-health-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 0 1.2rem;
+}
+
+.health-pill {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 170px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: var(--shadow-sm);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.health-pill small {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.health-pill strong {
+  display: block;
+  font-size: 0.94rem;
+  color: var(--text-primary);
+}
+
+.health-pill-ok {
+  border-color: rgba(22, 132, 91, 0.18);
+  background: rgba(22, 132, 91, 0.04);
+}
+
+.health-pill-warn {
+  border-color: rgba(168, 109, 0, 0.18);
+  background: rgba(168, 109, 0, 0.04);
+}
+
+.health-pill-offline {
+  border-color: rgba(197, 61, 75, 0.18);
+  background: rgba(197, 61, 75, 0.04);
+}
+
+.health-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 14px currentColor;
+}
+
+.health-pill-ok .health-dot {
+  background: var(--green);
+  color: var(--green);
+}
+
+.health-pill-warn .health-dot {
+  background: var(--yellow);
+  color: var(--yellow);
+}
+
+.health-pill-offline .health-dot {
+  background: var(--red);
+  color: var(--red);
+}
+
+.search-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-bar .form-control {
+  width: 250px;
+  height: 42px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.88);
+  border-radius: 12px;
+  padding-left: 38px;
+  box-shadow: var(--shadow-sm);
+}
+
+.search-bar .search-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.stat-card {
+  padding: 1.1rem 1.15rem;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,251,255,0.96));
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--t-fast), box-shadow var(--t-fast);
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
 /* ── Bootstrap color overrides ─────────────────────────────── */
 h1,
 h2,

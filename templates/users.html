@@ -31,18 +31,21 @@
                                 <span class="badge {% if user.is_admin %}bg-danger{% else %}bg-primary{% endif %}">
                                     {{ 'Admin' if user.is_admin else 'User' }}
                                 </span>
-                                   </td>
+                            </td>
                             <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
                             <td>
-                                <button class="btn btn-sm btn-info edit-user" data-user-id="{{ user.id | string }}" type="button">
+                                <button class="btn btn-sm btn-info edit-user" data-user-id="{{ user.id | string }}"
+                                    type="button">
                                     <i class="fas fa-pencil-alt"></i>
                                 </button>
                                 {% if user.id != current_user.id %}
-                                <button class="btn btn-sm btn-danger delete-user" data-user-id="{{ user.id | string }}" type="button">
+                                <button class="btn btn-sm btn-danger delete-user" data-user-id="{{ user.id | string }}"
+                                    type="button">
                                     <i class="fas fa-trash"></i>
                                 </button>
                                 {% endif %}
-                                <button class="btn btn-sm btn-secondary view-activity" data-user-id="{{ user.id | string }}" type="button">
+                                <button class="btn btn-sm btn-secondary view-activity"
+                                    data-user-id="{{ user.id | string }}" type="button">
                                     <i class="fas fa-history"></i>
                                 </button>
                             </td>
@@ -57,7 +60,7 @@
 
 <!-- Add User Modal -->
 <div class="modal fade" id="addUserModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Add New User</h5>
@@ -96,7 +99,7 @@
 
 <!-- Edit User Modal -->
 <div class="modal fade" id="editUserModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Edit User</h5>
@@ -136,7 +139,7 @@
 
 <!-- Activity Log Modal -->
 <div class="modal fade" id="activityLogModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">User Activity Log</h5>
@@ -170,10 +173,10 @@
 {% block scripts %}
 <script>
     // Add event listeners when the document is loaded
-    document.addEventListener('DOMContentLoaded', function() {
+    document.addEventListener('DOMContentLoaded', function () {
         // Edit user buttons
         document.querySelectorAll('.edit-user').forEach(button => {
-            button.addEventListener('click', function() {
+            button.addEventListener('click', function () {
                 const userId = this.getAttribute('data-user-id');
                 editUser(userId);
             });
@@ -181,7 +184,7 @@
 
         // Delete user buttons
         document.querySelectorAll('.delete-user').forEach(button => {
-            button.addEventListener('click', function() {
+            button.addEventListener('click', function () {
                 const userId = this.getAttribute('data-user-id');
                 deleteUser(userId);
             });
@@ -189,7 +192,7 @@
 
         // Add event listener for activity log buttons
         document.querySelectorAll('.view-activity').forEach(button => {
-            button.addEventListener('click', function() {
+            button.addEventListener('click', function () {
                 const userId = this.getAttribute('data-user-id');
                 viewUserActivity(userId);
             });
@@ -199,54 +202,53 @@
     function saveUser() {
         const form = document.getElementById('userForm');
         const formData = new FormData(form);
-        
-        // Validate passwords match
+
         if (formData.get('password') !== formData.get('confirm_password')) {
-            alert('Passwords do not match!');
+            showNotification('Validation Error', 'Passwords do not match!', 'unauthorized');
             return;
         }
-        
+
         fetch('/api/users', {
             method: 'POST',
             body: formData
         })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                location.reload();
-            } else {
-                alert(data.message || 'Error creating user');
-            }
-        })
-        .catch(error => {
-            console.error('Error creating user:', error);
-            alert('An error occurred while creating the user.');
-        });
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const addModal = getOrCreateModal('addUserModal');
+                    if (addModal) addModal.hide();
+                    showNotification('Success', 'User created successfully!', 'authorized');
+                    setTimeout(() => location.reload(), 800);
+                } else {
+                    showNotification('Error', data.message || 'Error creating user', 'unauthorized');
+                }
+            })
+            .catch(error => {
+                console.error('Error creating user:', error);
+                showNotification('Error', 'An error occurred while creating the user.', 'unauthorized');
+            });
     }
 
     function editUser(id) {
-        // Fetch user data by ID to populate the edit modal
         fetch(`/api/users/${id}`)
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    // Populate edit modal with user data
                     document.getElementById('edit_user_id').value = data.user.id;
                     document.getElementById('edit_username').value = data.user.username;
                     document.getElementById('edit_is_admin').value = data.user.is_admin.toString();
-                    // Clear password fields
                     document.getElementById('edit_password').value = '';
                     document.getElementById('edit_confirm_password').value = '';
-                    // Show the modal
-                    const editModal = new bootstrap.Modal(document.getElementById('editUserModal'));
-                    editModal.show();
+
+                    const editModal = getOrCreateModal('editUserModal');
+                    if (editModal) editModal.show();
                 } else {
-                    alert(data.message || 'Error fetching user data for editing.');
+                    showNotification('Error', data.message || 'Error fetching user data for editing.', 'unauthorized');
                 }
             })
             .catch(error => {
                 console.error('Error fetching user for edit:', error);
-                alert('An error occurred while fetching user data for editing.');
+                showNotification('Error', 'An error occurred while fetching user data for editing.', 'unauthorized');
             });
     }
 
@@ -257,24 +259,20 @@
         const password = formData.get('password');
         const confirmPassword = formData.get('confirm_password');
 
-        // Validate passwords if provided
         if (password && password !== confirmPassword) {
-            alert('New passwords do not match!');
+            showNotification('Validation Error', 'New passwords do not match!', 'unauthorized');
             return;
         }
 
-        // Construct the update data object
         const updateData = {
             username: formData.get('username'),
-            is_admin: formData.get('is_admin') === 'true' // Convert string to boolean
+            is_admin: formData.get('is_admin') === 'true'
         };
 
-        // Include password only if provided
         if (password) {
             updateData.password = password;
         }
 
-        // Send update request to the server
         fetch(`/api/users/${userId}`, {
             method: 'PUT',
             headers: {
@@ -282,22 +280,21 @@
             },
             body: JSON.stringify(updateData)
         })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('User updated successfully!');
-                // Close the modal and refresh the page
-                const editModal = bootstrap.Modal.getInstance(document.getElementById('editUserModal'));
-                editModal.hide();
-                location.reload();
-            } else {
-                alert(data.message || 'Error updating user.');
-            }
-        })
-        .catch(error => {
-            console.error('Error updating user:', error);
-            alert('An error occurred while updating the user.');
-        });
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const editModal = getOrCreateModal('editUserModal');
+                    if (editModal) editModal.hide();
+                    showNotification('Success', 'User updated successfully!', 'authorized');
+                    setTimeout(() => location.reload(), 800);
+                } else {
+                    showNotification('Error', data.message || 'Error updating user.', 'unauthorized');
+                }
+            })
+            .catch(error => {
+                console.error('Error updating user:', error);
+                showNotification('Error', 'An error occurred while updating the user.', 'unauthorized');
+            });
     }
 
     function deleteUser(id) {
@@ -305,28 +302,28 @@
             fetch(`/api/users/${id}`, {
                 method: 'DELETE'
             })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    location.reload();
-                } else {
-                    alert(data.message || 'Error deleting user');
-                }
-            })
-            .catch(error => {
-                console.error('Error deleting user:', error);
-                alert('An error occurred while deleting the user.');
-            });
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showNotification('Success', 'User deleted successfully!', 'authorized');
+                        setTimeout(() => location.reload(), 800);
+                    } else {
+                        showNotification('Error', data.message || 'Error deleting user', 'unauthorized');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error deleting user:', error);
+                    showNotification('Error', 'An error occurred while deleting the user.', 'unauthorized');
+                });
         }
     }
 
     function viewUserActivity(id) {
-        console.log('Attempting to view activity for user ID:', id);
         fetch(`/api/users/${id}/activities`)
             .then(response => response.json())
             .then(data => {
                 const activityLogBody = document.getElementById('activityLogBody');
-                activityLogBody.innerHTML = ''; // Clear previous entries
+                activityLogBody.innerHTML = '';
 
                 if (data.success && data.activities.length > 0) {
                     data.activities.forEach(activity => {
@@ -340,22 +337,20 @@
                         activityLogBody.appendChild(row);
                     });
                 } else if (data.success && data.activities.length === 0) {
-                     activityLogBody.innerHTML = '<tr><td colspan="4">No activity found for this user.</td></tr>';
+                    activityLogBody.innerHTML = '<tr><td colspan="4">No activity found for this user.</td></tr>';
                 } else {
-                     activityLogBody.innerHTML = `<tr><td colspan="4">Error loading activity: ${data.message || 'Unknown error'}</td></tr>`;
+                    activityLogBody.innerHTML = `<tr><td colspan="4">Error loading activity: ${data.message || 'Unknown error'}</td></tr>`;
                 }
 
-                // Show the modal
-                const activityModal = new bootstrap.Modal(document.getElementById('activityLogModal'));
-                activityModal.show();
+                const activityModal = getOrCreateModal('activityLogModal');
+                if (activityModal) activityModal.show();
             })
             .catch(error => {
                 console.error('Error fetching user activity:', error);
-                alert('An error occurred while fetching user activity.');
                 const activityLogBody = document.getElementById('activityLogBody');
                 activityLogBody.innerHTML = '<tr><td colspan="4">An error occurred while loading activity.</td></tr>';
-                const activityModal = new bootstrap.Modal(document.getElementById('activityLogModal'));
-                activityModal.show(); // Still show modal with error message
+                const activityModal = getOrCreateModal('activityLogModal');
+                if (activityModal) activityModal.show();
             });
     }
 </script>

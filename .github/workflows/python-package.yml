@@ -29,6 +29,16 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install flake8 pytest
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    - name: Configure 21st.dev CLI auth for CI
+      env:
+        API_KEY_21ST: ${{ secrets.API_KEY_21ST }}
+      run: |
+        echo "Using 21st.dev API key from CI secrets."
+        if [ -z "$API_KEY_21ST" ]; then
+          echo "API_KEY_21ST is not set; CI scripts should fail fast or skip if 21st is not required."
+        fi
+
     - name: Lint with flake8
       run: |
         # stop the build if there are Python syntax errors or undefined names

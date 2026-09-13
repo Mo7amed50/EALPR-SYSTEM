@@ -11,6 +11,7 @@ from datetime import datetime
 from bson import ObjectId
 
 from config import DEFAULT_ADMIN_PASSWORD, OFFLINE_ADMIN_PASSWORD
+from ealpr import extensions
 from models import User
 
 auth_bp = Blueprint("auth", __name__)
@@ -29,7 +30,6 @@ def _build_offline_user():
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
-    from ealpr.extensions import DB_ENABLED
     if current_user.is_authenticated:
         return redirect(url_for("main.index"))
 
@@ -37,7 +37,7 @@ def login():
         username = request.form.get("username")
         password = request.form.get("password")
 
-        if not DB_ENABLED:
+        if not extensions.DB_ENABLED:
             if username == "admin" and password == OFFLINE_ADMIN_PASSWORD:
                 login_user(_build_offline_user())
                 flash("Signed in using offline fallback mode.", "info")
@@ -49,7 +49,7 @@ def login():
 
         if user:
             # Lockout check: 5 failures within 5 minutes
-            if user.failed_login_attempts >= 5 and (
+            if user.failed_login_attempts >= 5 and user.last_failed_login and (
                 datetime.utcnow() - user.last_failed_login
             ).total_seconds() < 300:
                 flash("Account temporarily locked. Please try again later.")

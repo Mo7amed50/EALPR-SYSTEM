@@ -14,7 +14,7 @@ from flask_login import login_required, current_user
 from bson.objectid import ObjectId, InvalidId
 from datetime import datetime
 
-from ealpr.extensions import DB_ENABLED
+from ealpr import extensions
 from ealpr.decorators import db_required
 
 from models import User, UserActivity
@@ -25,7 +25,7 @@ users_bp = Blueprint("users", __name__)
 
 @users_bp.before_request
 def check_db_available():
-    if not DB_ENABLED:
+    if not extensions.DB_ENABLED:
         if request.path.startswith("/api/") or request.is_json:
             return jsonify({
                 "success": False,
@@ -107,8 +107,8 @@ def update_user(user_id):
         if not user:
             return jsonify({"success": False, "message": "User not found"}), 404
 
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
             return jsonify({"success": False, "message": "No data provided"}), 400
 
         if "username" in data:

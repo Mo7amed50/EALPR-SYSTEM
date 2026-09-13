@@ -46,7 +46,8 @@
                     <div class="col-md-4">
                         <div class="form-group mb-3">
                             <label for="responsible_department">Responsible Department</label>
-                            <input type="text" class="form-control" id="responsible_department" name="responsible_department">
+                            <input type="text" class="form-control" id="responsible_department"
+                                name="responsible_department">
                         </div>
                     </div>
                     <div class="col-md-4">
@@ -72,8 +73,7 @@
                 <div class="row">
                     <div class="col-md-8">
                         <input type="text" class="form-control" id="searchInput" name="search_query"
-                               placeholder="Search by Name, Visitor Code, or License Plate"
-                               value="{{ search_query }}">
+                            placeholder="Search by Name, Visitor Code, or License Plate" value="{{ search_query }}">
                     </div>
                     <div class="col-md-4">
                         <button type="submit" class="btn btn-outline-primary w-100">Search</button>
@@ -119,22 +119,22 @@
                             <td>
                                 <div class="btn-group">
                                     <button type="button" class="btn btn-sm btn-primary edit-btn"
-                                            data-visitor-id="{{ visitor.visitor_id }}">
+                                        data-visitor-id="{{ visitor.visitor_id }}">
                                         Edit
                                     </button>
                                     {% if visitor.status != 'authorized' %}
                                     <button type="button" class="btn btn-sm btn-success authorize-btn"
-                                            data-visitor-id="{{ visitor.visitor_id }}">
+                                        data-visitor-id="{{ visitor.visitor_id }}">
                                         Authorize
                                     </button>
                                     {% else %}
                                     <button type="button" class="btn btn-sm btn-warning unauthorize-btn"
-                                            data-visitor-id="{{ visitor.visitor_id }}">
+                                        data-visitor-id="{{ visitor.visitor_id }}">
                                         Unauthorize
                                     </button>
                                     {% endif %}
                                     <button type="button" class="btn btn-sm btn-danger delete-btn"
-                                            data-visitor-id="{{ visitor.visitor_id }}">
+                                        data-visitor-id="{{ visitor.visitor_id }}">
                                         Delete
                                     </button>
                                 </div>
@@ -150,7 +150,7 @@
 
 <!-- Edit Visitor Modal -->
 <div class="modal fade" id="editVisitorModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Edit Visitor</h5>
@@ -216,175 +216,177 @@
 
 {% block scripts %}
 <script>
-document.addEventListener('DOMContentLoaded', function () {
-    // Add Visitor Form Submission
-    document.getElementById('addVisitorForm').addEventListener('submit', function (event) {
-        event.preventDefault();
-        const name = document.getElementById('name').value;
-        const visitorCode = document.getElementById('visitor_code').value;
-        const licensePlate = document.getElementById('license_plate').value;
-        const status = document.getElementById('status').value;
-        const responsibleDepartment = document.getElementById('responsible_department').value;
-        const generalDepartment = document.getElementById('general_department').value;
+    document.addEventListener('DOMContentLoaded', function () {
+        // Add Visitor Form Submission
+        document.getElementById('addVisitorForm').addEventListener('submit', function (event) {
+            event.preventDefault();
+            const name = document.getElementById('name').value;
+            const visitorCode = document.getElementById('visitor_code').value;
+            const licensePlate = document.getElementById('license_plate').value;
+            const status = document.getElementById('status').value;
+            const responsibleDepartment = document.getElementById('responsible_department').value;
+            const generalDepartment = document.getElementById('general_department').value;
 
-        if (!name || !visitorCode || !licensePlate) {
-            alert('All required fields must be filled.');
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append('name', name);
-        formData.append('visitor_code', visitorCode);
-        formData.append('license_plate', licensePlate);
-        formData.append('status', status);
-        formData.append('responsible_department', responsibleDepartment);
-        formData.append('general_department', generalDepartment);
-
-        fetch('/api/visitors', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('Visitor added successfully!');
-                document.getElementById('addVisitorForm').reset();
-                window.location.reload();
-            } else {
-                alert('Error: ' + (data.message || 'Failed to add visitor'));
+            if (!name || !visitorCode || !licensePlate) {
+                showNotification('Validation Error', 'All required fields must be filled.', 'unauthorized');
+                return;
             }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('An error occurred while adding the visitor');
-        });
-    });
 
-    // Load Visitor Info into Edit Modal
-    document.querySelectorAll('.edit-btn').forEach(button => {
-        button.addEventListener('click', function () {
-            const visitorId = this.getAttribute('data-visitor-id');
+            const formData = new FormData();
+            formData.append('name', name);
+            formData.append('visitor_code', visitorCode);
+            formData.append('license_plate', licensePlate);
+            formData.append('status', status);
+            formData.append('responsible_department', responsibleDepartment);
+            formData.append('general_department', generalDepartment);
 
-            fetch(`/api/visitors/${visitorId}`)
+            fetch('/api/visitors', {
+                method: 'POST',
+                body: formData
+            })
                 .then(response => response.json())
-                .then(visitor => {
-                    document.getElementById('edit_visitor_id').value = visitorId;
-                    document.getElementById('edit_name').value = visitor.name;
-                    document.getElementById('edit_visitor_code').value = visitor.visitor_code;
-                    document.getElementById('edit_license_plate').value = visitor.license_plate;
-                    document.getElementById('edit_status').value = visitor.status;
-                    document.getElementById('edit_responsible_department').value = visitor.responsible_department || '';
-                    document.getElementById('edit_general_department').value = visitor.general_department || '';
-
-                    const modal = new bootstrap.Modal(document.getElementById('editVisitorModal'));
-                    modal.show();
+                .then(data => {
+                    if (data.success) {
+                        showNotification('Success', 'Visitor added successfully!', 'authorized');
+                        document.getElementById('addVisitorForm').reset();
+                        setTimeout(() => window.location.reload(), 800);
+                    } else {
+                        showNotification('Error', data.message || 'Failed to add visitor', 'unauthorized');
+                    }
                 })
                 .catch(error => {
                     console.error('Error:', error);
-                    alert('Failed to load visitor information');
+                    showNotification('Error', 'An error occurred while adding the visitor', 'unauthorized');
                 });
         });
-    });
 
-    // Save Edited Visitor
-    document.getElementById('saveVisitorBtn').addEventListener('click', function () {
-        const visitorId = document.getElementById('edit_visitor_id').value;
-        const name = document.getElementById('edit_name').value;
-        const visitorCode = document.getElementById('edit_visitor_code').value;
-        const licensePlate = document.getElementById('edit_license_plate').value;
-        const status = document.getElementById('edit_status').value;
-        const responsibleDepartment = document.getElementById('edit_responsible_department').value;
-        const generalDepartment = document.getElementById('edit_general_department').value;
+        // Load Visitor Info into Edit Modal
+        document.querySelectorAll('.edit-btn').forEach(button => {
+            button.addEventListener('click', function () {
+                const visitorId = this.getAttribute('data-visitor-id');
 
-        if (!name || !visitorCode || !licensePlate) {
-            alert('All required fields must be filled.');
-            return;
-        }
+                fetch(`/api/visitors/${visitorId}`)
+                    .then(response => response.json())
+                    .then(visitor => {
+                        document.getElementById('edit_visitor_id').value = visitorId;
+                        document.getElementById('edit_name').value = visitor.name;
+                        document.getElementById('edit_visitor_code').value = visitor.visitor_code;
+                        document.getElementById('edit_license_plate').value = visitor.license_plate;
+                        document.getElementById('edit_status').value = visitor.status;
+                        document.getElementById('edit_responsible_department').value = visitor.responsible_department || '';
+                        document.getElementById('edit_general_department').value = visitor.general_department || '';
 
-        fetch(`/api/visitors/${visitorId}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                name,
-                visitor_code: visitorCode,
-                license_plate: licensePlate,
-                status,
-                responsible_department: responsibleDepartment,
-                general_department: generalDepartment
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                bootstrap.Modal.getInstance(document.getElementById('editVisitorModal')).hide();
-                alert('Visitor updated successfully!');
-                window.location.reload();
-            } else {
-                alert('Error: ' + (data.message || 'Failed to update visitor'));
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('An error occurred while updating the visitor');
+                        const modal = getOrCreateModal('editVisitorModal');
+                        if (modal) modal.show();
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        showNotification('Error', 'Failed to load visitor information', 'unauthorized');
+                    });
+            });
         });
-    });
 
-    // Authorize / Unauthorize Visitor
-    document.querySelectorAll('.authorize-btn, .unauthorize-btn').forEach(button => {
-        button.addEventListener('click', function () {
-            const visitorId = this.getAttribute('data-visitor-id');
-            const isAuthorize = this.classList.contains('authorize-btn');
+        // Save Edited Visitor
+        document.getElementById('saveVisitorBtn').addEventListener('click', function () {
+            const visitorId = document.getElementById('edit_visitor_id').value;
+            const name = document.getElementById('edit_name').value;
+            const visitorCode = document.getElementById('edit_visitor_code').value;
+            const licensePlate = document.getElementById('edit_license_plate').value;
+            const status = document.getElementById('edit_status').value;
+            const responsibleDepartment = document.getElementById('edit_responsible_department').value;
+            const generalDepartment = document.getElementById('edit_general_department').value;
+
+            if (!name || !visitorCode || !licensePlate) {
+                showNotification('Validation Error', 'All required fields must be filled.', 'unauthorized');
+                return;
+            }
 
             fetch(`/api/visitors/${visitorId}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ authorized: isAuthorize })
+                body: JSON.stringify({
+                    name,
+                    visitor_code: visitorCode,
+                    license_plate: licensePlate,
+                    status,
+                    responsible_department: responsibleDepartment,
+                    general_department: generalDepartment
+                })
             })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert(`Visitor ${isAuthorize ? 'authorized' : 'unauthorized'} successfully!`);
-                    window.location.reload();
-                } else {
-                    alert('Error: ' + (data.message || 'Operation failed'));
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('An error occurred during operation');
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const modal = getOrCreateModal('editVisitorModal');
+                        if (modal) modal.hide();
+                        showNotification('Success', 'Visitor updated successfully!', 'authorized');
+                        setTimeout(() => window.location.reload(), 800);
+                    } else {
+                        showNotification('Error', data.message || 'Failed to update visitor', 'unauthorized');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    showNotification('Error', 'An error occurred while updating the visitor', 'unauthorized');
+                });
+        });
+
+        // Authorize / Unauthorize Visitor
+        document.querySelectorAll('.authorize-btn, .unauthorize-btn').forEach(button => {
+            button.addEventListener('click', function () {
+                const visitorId = this.getAttribute('data-visitor-id');
+                const isAuthorize = this.classList.contains('authorize-btn');
+
+                fetch(`/api/visitors/${visitorId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ authorized: isAuthorize })
+                })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showNotification('Success', `Visitor ${isAuthorize ? 'authorized' : 'unauthorized'} successfully!`, 'authorized');
+                            setTimeout(() => window.location.reload(), 800);
+                        } else {
+                            showNotification('Error', data.message || 'Operation failed', 'unauthorized');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        showNotification('Error', 'An error occurred during operation', 'unauthorized');
+                    });
+            });
+        });
+
+        // Delete Visitor
+        document.querySelectorAll('.delete-btn').forEach(button => {
+            button.addEventListener('click', function () {
+                const visitorId = this.getAttribute('data-visitor-id');
+
+                if (!confirm('Are you sure you want to delete this visitor?')) return;
+
+                fetch(`/api/visitors/${visitorId}`, {
+                    method: 'DELETE'
+                })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showNotification('Success', 'Visitor deleted successfully!', 'authorized');
+                            setTimeout(() => window.location.reload(), 800);
+                        } else {
+                            showNotification('Error', data.message || 'Failed to delete visitor', 'unauthorized');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        showNotification('Error', 'An error occurred while deleting the visitor', 'unauthorized');
+                    });
             });
         });
     });
-
-    // Delete Visitor
-    document.querySelectorAll('.delete-btn').forEach(button => {
-        button.addEventListener('click', function () {
-            const visitorId = this.getAttribute('data-visitor-id');
-
-            if (!confirm('Are you sure you want to delete this visitor?')) return;
-
-            fetch(`/api/visitors/${visitorId}`, {
-                method: 'DELETE'
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert('Visitor deleted successfully!');
-                    window.location.reload();
-                } else {
-                    alert('Error: ' + (data.message || 'Failed to delete visitor'));
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('An error occurred while deleting the visitor');
-            });
-        });
-    });
-});
 </script>
+
 {% endblock %}

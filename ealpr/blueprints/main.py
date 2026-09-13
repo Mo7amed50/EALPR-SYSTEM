@@ -12,7 +12,7 @@ from flask import Blueprint, render_template, request, flash, redirect, url_for,
 from flask_login import login_required, current_user
 from datetime import datetime
 
-from ealpr.extensions import DB_ENABLED
+from ealpr import extensions
 from models import Visitor, DetectionResult, UserActivity
 
 main_bp = Blueprint("main", __name__)
@@ -25,7 +25,7 @@ def before_request():
 
 @main_bp.after_app_request
 def after_request(response):
-    if not current_user.is_authenticated or not DB_ENABLED:
+    if not current_user.is_authenticated or not extensions.DB_ENABLED:
         return response
     if request.endpoint in (None, "static"):
         return response
@@ -51,7 +51,7 @@ def after_request(response):
 @main_bp.route("/")
 @login_required
 def index():
-    if not DB_ENABLED:
+    if not extensions.DB_ENABLED:
         return render_template(
             "index.html",
             total_detections=0,
@@ -75,7 +75,7 @@ def index():
 @main_bp.route("/api/dashboard/stats")
 @login_required
 def get_dashboard_stats():
-    if not DB_ENABLED:
+    if not extensions.DB_ENABLED:
         return jsonify({
             "success": False,
             "stats": {

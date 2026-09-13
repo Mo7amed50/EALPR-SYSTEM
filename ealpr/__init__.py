@@ -88,13 +88,24 @@ def create_app() -> Flask:
             return ""
         return base64.b64encode(data).decode("utf-8")
 
+    @app.template_filter("detection_thumb_url")
+    def detection_thumb_url_filter(detection):
+        det_id = getattr(detection, "id", None)
+        if det_id:
+            return f"/api/images/{det_id}/processed"
+        return ""
+
     @app.template_filter("detection_thumb")
     def detection_thumb_filter(detection):
+        det_id = getattr(detection, "id", None)
+        if det_id:
+            return f"/api/images/{det_id}/processed"
         from ealpr.image_storage import encode_detection_image
         return encode_detection_image(
             getattr(detection, "processed_image_path", None),
             getattr(detection, "processed_image", None),
         )
+
 
     # ── Register blueprints ──────────────────────────────────────────────────
     from ealpr.blueprints.auth import auth_bp
@@ -122,21 +133,29 @@ def create_app() -> Flask:
 # ── Private helpers ──────────────────────────────────────────────────────────
 
 def _connect_mongodb(max_retries: int = 3) -> bool:
-    """Connect to MongoDB with exponential back-off retry."""
+    """Connect to MongoDB with retry and transparent offline fallback."""
     from ealpr import extensions
     from mongoengine import disconnect, get_connection
 
-    if not MONGODB_URI:
+    uri = (MONGODB_URI or "").strip()
+    if not uri:
         print("No MongoDB URI configured. Continuing without DB (read-only mode).")
         extensions.DB_ENABLED = False
         return False
 
+    if not (uri.startswith("mongodb://") or uri.startswith("mongodb+srv://")):
+        print(f"Invalid MongoDB URI format: {uri}. Continuing without DB (read-only mode).")
+        extensions.DB_ENABLED = False
+        return False
+
+    extensions.DB_ENABLED = False
     for attempt in range(max_retries):
         try:
             print(f"Connecting to MongoDB (attempt {attempt + 1}/{max_retries})...")
+            disconnect(alias="default")
             connect(
                 MONGODB_DB_NAME,
-                host=MONGODB_URI,
+                host=uri,
                 alias="default",
                 serverSelectionTimeoutMS=5000,
                 connectTimeoutMS=5000,
@@ -151,17 +170,18 @@ def _connect_mongodb(max_retries: int = 3) -> bool:
             extensions.DB_ENABLED = True
             return True
         except Exception as e:  # pylint: disable=broad-exception-caught
-            print(f"MongoDB attempt {attempt + 1} failed: {e}")
             try:
                 disconnect(alias="default")
             except Exception:  # pylint: disable=broad-exception-caught
                 pass
+            print(f"MongoDB attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
-            else:
-                print("All connection attempts failed. Continuing without DB (read-only mode).")
-                extensions.DB_ENABLED = False
-                return False
+                continue
+
+            print("All MongoDB connection attempts failed. Continuing without DB (read-only mode).")
+            extensions.DB_ENABLED = False
+            return False
 
 
 def _create_default_admin() -> None:

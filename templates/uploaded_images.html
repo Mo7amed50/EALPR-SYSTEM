@@ -58,28 +58,28 @@
     <!-- Images Grid -->
     <div class="row" id="imagesGrid">
         {% for detection in detections %}
-        <div class="col-xl-3 col-lg-4 col-md-6 mb-4 image-card"
-             data-plate="{{ detection.plate_number }}"
-             data-status="{{ detection.status }}"
-             data-date="{{ detection.timestamp.strftime('%Y-%m-%d') }}">
+        {% set detection_status = detection.status or 'unknown' %}
+        {% set detection_date = detection.timestamp.strftime('%Y-%m-%d') if detection.timestamp else '' %}
+        {% set detection_datetime = detection.timestamp.strftime('%Y-%m-%d %H:%M') if detection.timestamp else 'N/A' %}
+        {% set detection_image = detection|detection_thumb %}
+        <div class="col-xl-3 col-lg-4 col-md-6 mb-4 image-card" data-plate="{{ detection.plate_number or '' }}"
+            data-status="{{ detection_status }}" data-date="{{ detection_date }}">
             <div class="card h-100">
                 <div class="card-header d-flex justify-content-between align-items-center">
-                    <span class="badge {% if detection.status == 'authorized' %}bg-success{% else %}bg-warning{% endif %}">
-                        {{ detection.status }}
+                    <span
+                        class="badge {% if detection_status == 'authorized' %}bg-success{% else %}bg-warning{% endif %}">
+                        {{ detection_status }}
                     </span>
-                    <small class="text-muted">{{ detection.timestamp.strftime('%Y-%m-%d %H:%M') }}</small>
+                    <small class="text-muted">{{ detection_datetime }}</small>
                 </div>
                 <div class="card-body">
                     <div class="image-container">
-                        <img src="data:image/jpeg;base64,{{ detection.processed_image|b64encode }}"
-                             class="img-fluid rounded"
-                             alt="Processed Image"
-                             data-bs-toggle="modal"
-                             data-bs-target="#imageModal"
-                             data-detection-id="{{ detection.id }}"> <!-- Use string ID -->
+                        <img src="{% if detection_image.startswith('/') %}{{ detection_image }}{% else %}data:image/jpeg;base64,{{ detection_image }}{% endif %}"
+                            class="img-fluid rounded" alt="Processed Image" data-bs-toggle="modal"
+                            data-bs-target="#imageModal" data-detection-id="{{ detection.id }}">
                     </div>
                     <div class="image-info mt-3">
-                        <h6 class="plate-number">{{ detection.plate_number }}</h6>
+                        <h6 class="plate-number">{{ detection.plate_number or 'Unknown plate' }}</h6>
                         {% if detection.visitor_name %}
                         <p class="visitor-name mb-0">{{ detection.visitor_name }}</p>
                         {% endif %}
@@ -93,7 +93,7 @@
 
 <!-- Image Modal -->
 <div class="modal fade" id="imageModal" tabindex="-1" aria-labelledby="imageModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="imageModalLabel">Detection Details</h5>
@@ -155,19 +155,20 @@
         const button = $(event.relatedTarget); // Button that triggered the modal
         const detectionId = button.data('detection-id'); // Extract info from data-* attributes
 
-        console.log('Fetching detection details for ID:', detectionId); // Debug log
-
         // Fetch detection details via API
-        $.get(`/api/detection/${detectionId}`, function(data) {
+        $.get(`/api/detection/${detectionId}`, function (data) {
             if (!data.success) {
-                console.error('API returned failure:', data.message);
-                alert('Failed to load detection details: ' + data.message);
+                showNotification('Error', 'Failed to load detection details: ' + (data.message || 'Unknown error'), 'unauthorized');
+                getOrCreateModal('imageModal')?.hide();
                 return;
             }
 
-            // Update modal content
-            $('#modalOriginalImage').attr('src', `data:image/jpeg;base64,${data.original_image}`);
-            $('#modalProcessedImage').attr('src', `data:image/jpeg;base64,${data.processed_image}`);
+            // Update modal content via URLs to avoid Base64 lag
+            const origUrl = data.original_image_url || (data.original_image ? `data:image/jpeg;base64,${data.original_image}` : '');
+            const procUrl = data.processed_image_url || (data.processed_image ? `data:image/jpeg;base64,${data.processed_image}` : '');
+
+            $('#modalOriginalImage').attr('src', origUrl);
+            $('#modalProcessedImage').attr('src', procUrl);
             $('#modalPlateNumber').text(data.plate_number || 'N/A');
 
             // Update status with badge
@@ -196,7 +197,6 @@
                 $('#modalVisitorId').text(visitorInfo.visitor_id || 'N/A');
                 $('#modalVisitorPlate').text(visitorInfo.license_plate || data.plate_number || 'N/A');
                 $('#modalEntryTime').text(visitorInfo.entry_time || 'N/A');
-                // Only show Exit Time if it exists and is not "N/A"
                 if (visitorInfo.exit_time && visitorInfo.exit_time !== 'N/A') {
                     $('#modalExitTime').text(visitorInfo.exit_time);
                     $('#exitTimeContainer').show();
@@ -207,20 +207,16 @@
             } else {
                 $('#visitorInfoSection').hide();
             }
-        }).fail(function(xhr, status, error) {
-            // Log detailed error for debugging
-            console.error('Error fetching detection details:', {
-                status: status,
-                error: error,
-                response: xhr.responseText
-            });
+        }).fail(function (xhr, status, error) {
             let errorMessage = 'Error fetching detection details.';
             if (xhr.responseJSON && xhr.responseJSON.message) {
                 errorMessage += ' ' + xhr.responseJSON.message;
             }
-            alert(errorMessage);
+            showNotification('Error', errorMessage, 'unauthorized');
+            getOrCreateModal('imageModal')?.hide();
         });
     });
+
 
     // --- Filtering and Searching ---
     function applyFilters() {
@@ -228,7 +224,7 @@
         const statusFilter = $('#statusFilter').val();
         const dateFilter = $('#dateFilter').val();
 
-        $('.image-card').each(function() {
+        $('.image-card').each(function () {
             const plateNumber = $(this).data('plate').toLowerCase();
             const status = $(this).data('status');
             const date = $(this).data('date'); // YYYY-MM-DD format
@@ -274,10 +270,10 @@
     $('#searchInput').on('keyup', applyFilters);
     $('#statusFilter').on('change', applyFilters);
     $('#dateFilter').on('change', applyFilters);
-    $('#refreshBtn').on('click', function() { location.reload(); }); // Simple refresh
+    $('#refreshBtn').on('click', function () { location.reload(); }); // Simple refresh
 
     // --- Export Button ---
-    $('#exportBtn').on('click', function() {
+    $('#exportBtn').on('click', function () {
         const status = $('#statusFilter').val();
         const dateFilter = $('#dateFilter').val();
 
@@ -292,14 +288,14 @@
     });
 
     // --- Clear Button ---
-    $('#clearBtn').on('click', function() {
+    $('#clearBtn').on('click', function () {
         if (!confirm('Are you sure you want to clear all detection records? This action cannot be undone.')) {
             return;
         }
         $.ajax({
             url: '/api/detections/clear',
             method: 'POST',
-            success: function(response) {
+            success: function (response) {
                 if (response.success) {
                     alert(response.message);
                     location.reload(); // Refresh the page to show the updated (empty) list
@@ -307,7 +303,7 @@
                     alert(response.message);
                 }
             },
-            error: function(xhr, status, error) {
+            error: function (xhr, status, error) {
                 console.error('Error clearing detection records:', status, error);
                 alert('An error occurred while clearing detection records.');
             }
@@ -341,7 +337,7 @@
         border-radius: 20px;
         padding: 0.75rem 1.5rem;
         border: none;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
     }
 
     .filters-section {
@@ -360,12 +356,12 @@
 
     .card {
         border: none;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
         transition: all 0.3s;
     }
 
     .card:hover {
-        box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
     }
 
     .image-container {
@@ -407,12 +403,14 @@
 
     /* Style for the Clear button */
     #clearBtn {
-        background-color: #dc3545; /* Red color for danger */
+        background-color: #dc3545;
+        /* Red color for danger */
         border-color: #dc3545;
     }
 
     #clearBtn:hover {
-        background-color: #c82333; /* Darker red on hover */
+        background-color: #c82333;
+        /* Darker red on hover */
         border-color: #c82333;
     }
 </style>

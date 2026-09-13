@@ -32,7 +32,8 @@
                             <td>{{ setting.description }}</td>
                             <td>{{ setting.updated_at | to_cairo }}</td>
                             <td>
-                                <button class="btn btn-sm btn-info edit-setting" data-setting-id="{{ setting.id | string }}" type="button">
+                                <button class="btn btn-sm btn-info edit-setting"
+                                    data-setting-id="{{ setting.id | string }}" type="button">
                                     <i class="fas fa-pencil-alt"></i>
                                 </button>
                             </td>
@@ -47,7 +48,7 @@
 
 <!-- Add Setting Modal -->
 <div class="modal fade" id="addSettingModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Add New Setting</h5>
@@ -79,7 +80,7 @@
 
 <!-- Edit Setting Modal -->
 <div class="modal fade" id="editSettingModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Edit Setting</h5>
@@ -98,7 +99,8 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Description</label>
-                        <textarea class="form-control" name="description" id="edit_description" rows="3" readonly></textarea>
+                        <textarea class="form-control" name="description" id="edit_description" rows="3"
+                            readonly></textarea>
                     </div>
                 </form>
             </div>
@@ -113,10 +115,10 @@
 
 {% block scripts %}
 <script>
-    document.addEventListener('DOMContentLoaded', function() {
+    document.addEventListener('DOMContentLoaded', function () {
         // Edit setting buttons
         document.querySelectorAll('.edit-setting').forEach(button => {
-            button.addEventListener('click', function() {
+            button.addEventListener('click', function () {
                 const settingId = this.getAttribute('data-setting-id');
                 fetch(`/api/settings/${settingId}`, {
                     method: 'GET',
@@ -124,23 +126,23 @@
                         'Content-Type': 'application/json'
                     }
                 })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        document.getElementById('edit_setting_id').value = settingId;
-                        document.getElementById('edit_key').value = data.setting.key;
-                        document.getElementById('edit_value').value = data.setting.value;
-                        document.getElementById('edit_description').value = data.setting.description;
-                        const editModal = new bootstrap.Modal(document.getElementById('editSettingModal'));
-                        editModal.show();
-                    } else {
-                        alert(data.message || 'Error fetching setting details');
-                    }
-                })
-                .catch(error => {
-                    console.error('Error fetching setting:', error);
-                    alert('An error occurred while fetching the setting.');
-                });
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            document.getElementById('edit_setting_id').value = settingId;
+                            document.getElementById('edit_key').value = data.setting.key;
+                            document.getElementById('edit_value').value = data.setting.value;
+                            document.getElementById('edit_description').value = data.setting.description;
+                            const editModal = getOrCreateModal('editSettingModal');
+                            if (editModal) editModal.show();
+                        } else {
+                            showNotification('Error', data.message || 'Error fetching setting details', 'unauthorized');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error fetching setting:', error);
+                        showNotification('Error', 'An error occurred while fetching the setting.', 'unauthorized');
+                    });
             });
         });
     });
@@ -154,22 +156,21 @@
             method: 'POST',
             body: formData
         })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('Setting created successfully!');
-                // Hide modal after save
-                const addModal = bootstrap.Modal.getInstance(document.getElementById('addSettingModal'));
-                if (addModal) addModal.hide();
-                location.reload();
-            } else {
-                alert(data.message || 'Error creating setting');
-            }
-        })
-        .catch(error => {
-            console.error('Error creating setting:', error);
-            alert('An error occurred while creating the setting.');
-        });
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const addModal = getOrCreateModal('addSettingModal');
+                    if (addModal) addModal.hide();
+                    showNotification('Success', 'Setting created successfully!', 'authorized');
+                    setTimeout(() => location.reload(), 800);
+                } else {
+                    showNotification('Error', data.message || 'Error creating setting', 'unauthorized');
+                }
+            })
+            .catch(error => {
+                console.error('Error creating setting:', error);
+                showNotification('Error', 'An error occurred while creating the setting.', 'unauthorized');
+            });
     }
 
     function updateSetting(event) {
@@ -178,7 +179,7 @@
         const value = document.getElementById('edit_value').value;
 
         if (!settingId || !value) {
-            alert('Setting ID and value are required.');
+            showNotification('Validation Error', 'Setting ID and value are required.', 'unauthorized');
             return;
         }
 
@@ -189,29 +190,28 @@
             },
             body: JSON.stringify({ value: value })
         })
-        .then(response => {
-            if (!response.ok) {
-                return response.json().then(data => {
-                    throw new Error(data.message || `HTTP error! Status: ${response.status}`);
-                });
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                alert('Setting updated successfully!');
-                // Hide modal after save
-                const editModal = bootstrap.Modal.getInstance(document.getElementById('editSettingModal'));
-                if (editModal) editModal.hide();
-                location.reload();
-            } else {
-                alert(data.message || 'Error updating setting');
-            }
-        })
-        .catch(error => {
-            console.error('Error updating setting:', error);
-            alert(`An error occurred while updating the setting: ${error.message}`);
-        });
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        throw new Error(data.message || `HTTP error! Status: ${response.status}`);
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    const editModal = getOrCreateModal('editSettingModal');
+                    if (editModal) editModal.hide();
+                    showNotification('Success', 'Setting updated successfully!', 'authorized');
+                    setTimeout(() => location.reload(), 800);
+                } else {
+                    showNotification('Error', data.message || 'Error updating setting', 'unauthorized');
+                }
+            })
+            .catch(error => {
+                console.error('Error updating setting:', error);
+                showNotification('Error', `An error occurred while updating the setting: ${error.message}`, 'unauthorized');
+            });
     }
 </script>
 {% endblock %}

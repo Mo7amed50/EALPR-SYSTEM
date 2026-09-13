@@ -146,29 +146,42 @@ def process_license_plate(image_path, plate_detector_model, ocr_model_ref):
     try:
         img = cv2.imread(image_path)
         if img is None:
-            return None, None, False, "Failed to load image file.", 0.0
+            return None, None, False, "Failed to load image file.", 0.0, 0.0, []
+
+        # Downscale oversized images to max 1920px width/height for fast inference
+        h, w = img.shape[:2]
+        max_dim = 1920
+        if max(h, w) > max_dim:
+            scale = max_dim / float(max(h, w))
+            new_w, new_h = int(w * scale), int(h * scale)
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
         results = plate_detector_model(img)
+
         if len(results) == 0 or not results[0].boxes or len(results[0].boxes.data) == 0:
-            return None, None, False, "No license plate detected.", 0.0
+            return None, None, False, "No license plate detected.", 0.0, 0.0, []
 
         box = results[0].boxes.data[0].tolist()
         plate_confidence = float(box[4]) if len(box) > 4 else 0.0
         threshold = get_confidence_threshold()
         if plate_confidence < threshold:
-            return None, None, False, "No license plate detected above confidence threshold.", 0.0
+            return None, None, False, "No license plate detected above confidence threshold.", 0.0, 0.0, []
 
         x1, y1, x2, y2 = [int(i) for i in box[0:4]]
         plate_roi = img[y1:y2, x1:x2]
         if plate_roi.size == 0:
-            return None, None, False, "Could not crop license plate area.", 0.0
+            return None, None, False, "Could not crop license plate area.", 0.0, 0.0, []
 
         plate_roi = cv2.resize(plate_roi, (220, 220))
         temp_plate_filename = f"plate_{os.path.basename(image_path)}"
         temp_plate_path = os.path.join(TEMP_DIR, temp_plate_filename)
         cv2.imwrite(temp_plate_path, plate_roi)
 
-        ocr_results = ocr_model_ref(temp_plate_path)
+        try:
+            ocr_results = ocr_model_ref(temp_plate_path)
+        finally:
+            if os.path.exists(temp_plate_path):
+                os.remove(temp_plate_path)
         predicted_label = ""
         detected_chars_count = 0
 
@@ -193,9 +206,6 @@ def process_license_plate(image_path, plate_detector_model, ocr_model_ref):
                     )
                     predicted_label += class_label
                     detected_chars_count += 1
-
-        if os.path.exists(temp_plate_path):
-            os.remove(temp_plate_path)
 
         if detected_chars_count == 0:
             return None, None, False, "No characters detected on the license plate.", 0.0, 0.0, []
@@ -266,15 +276,15 @@ def process_frame_and_detect(frame, frame_count, plate_det_model, ocr_mdl,
                 if time_since_last < VIDEO_DUPLICATE_WINDOW:
                     return None, None, frame
 
-            from ealpr.extensions import DB_ENABLED
+            from ealpr import extensions
             visitor = None
-            if DB_ENABLED:
+            if extensions.DB_ENABLED:
                 try:
                     visitor = Visitor.objects(license_plate=plate_text).first()
                 except Exception as db_err:
                     print(f"Error querying visitor: {db_err}")
 
-            status = "authorized" if visitor else "unauthorized"
+            status = "authorized" if visitor and visitor.authorized else "unauthorized"
 
             visitor_info = None
             if visitor:
@@ -288,7 +298,7 @@ def process_frame_and_detect(frame, frame_count, plate_det_model, ocr_mdl,
                 }
 
             # Persist detection result if DB is online
-            if DB_ENABLED:
+            if extensions.DB_ENABLED:
                 try:
                     from ealpr.image_storage import save_detection_images
 

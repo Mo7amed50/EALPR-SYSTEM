@@ -17,18 +17,21 @@ import io
 import os
 import csv
 import base64
+import uuid
 from datetime import datetime, timedelta
 
-from flask import Blueprint, render_template, request, jsonify, Response, flash, redirect, url_for
+from flask import Blueprint, render_template, request, jsonify, Response, flash, send_file
 from flask_login import login_required, current_user
 from mongoengine import Q
+from bson.objectid import ObjectId, InvalidId
+from werkzeug.utils import secure_filename
 
-from ealpr.extensions import DB_ENABLED
+from ealpr import extensions
 from ealpr.decorators import db_required
-from ealpr.image_storage import save_detection_images, encode_detection_image
+from ealpr.image_storage import save_detection_images, encode_detection_image, get_image_file_path, read_image_bytes
 from config import (
     ALLOWED_EXTENSIONS, TEMP_DIR,
-    ALLOWED_VIDEO_EXTENSIONS, VIDEO_FRAME_SKIP, MAX_VIDEO_SIZE,
+    ALLOWED_VIDEO_EXTENSIONS, MAX_VIDEO_SIZE, MAX_IMAGE_SIZE,
 )
 from models import Visitor, DetectionResult
 from ealpr.ai_models import get_plate_detection_model, get_ocr_model
@@ -39,6 +42,7 @@ from ealpr.utils import (
     process_frame_and_detect,
     generate_frames,
 )
+from ealpr.runtime_config import get_video_frame_skip
 
 detection_bp = Blueprint("detection", __name__)
 
@@ -48,24 +52,35 @@ detection_bp = Blueprint("detection", __name__)
 @detection_bp.route("/process_plate", methods=["POST"])
 @login_required
 def process_plate():
-    plate_detection_model = get_plate_detection_model()
-    ocr_model = get_ocr_model()
-    if plate_detection_model is None or ocr_model is None:
-        return jsonify({"error": "Models not loaded properly"}), 500
     if "image" not in request.files:
-        return jsonify({"error": "No image provided"}), 400
+        return jsonify({"success": False, "error": "No image provided"}), 400
 
     image = request.files["image"]
-    if image.filename == "":
-        return jsonify({"error": "No selected file"}), 400
-    if not image.filename.lower().endswith(tuple(ALLOWED_EXTENSIONS)):
+    safe_filename = secure_filename(image.filename or "")
+    if not safe_filename:
+        return jsonify({"success": False, "error": "No selected file"}), 400
+    if not safe_filename.lower().endswith(tuple(f".{ext}" for ext in ALLOWED_EXTENSIONS)):
         return jsonify({
+            "success": False,
             "error": f'Unsupported file type. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'
         }), 400
 
+    image.stream.seek(0, os.SEEK_END)
+    image_size = image.stream.tell()
+    image.stream.seek(0)
+    if image_size > MAX_IMAGE_SIZE:
+        return jsonify({
+            "success": False,
+            "error": f"Image file size exceeds limit of {MAX_IMAGE_SIZE / 1024 / 1024:.2f} MB"
+        }), 400
+
+    plate_detection_model = get_plate_detection_model()
+    ocr_model = get_ocr_model()
+    if plate_detection_model is None or ocr_model is None:
+        return jsonify({"success": False, "error": "Models not loaded properly"}), 503
+
     os.makedirs(TEMP_DIR, exist_ok=True)
-    temp_path = os.path.join(TEMP_DIR, image.filename)
-    detection_record = None
+    temp_path = os.path.join(TEMP_DIR, f"upload_{uuid.uuid4().hex}_{safe_filename}")
 
     try:
         image.save(temp_path)
@@ -79,7 +94,9 @@ def process_plate():
             return jsonify({"success": False, "message": error_msg, "status": "error"})
 
         import cv2
-        _, buffer = cv2.imencode(".jpg", processed_img)
+        encoded, buffer = cv2.imencode(".jpg", processed_img)
+        if not encoded:
+            return jsonify({"success": False, "message": "Could not encode processed image"}), 500
         processed_img_base64 = base64.b64encode(buffer).decode("utf-8")
 
         visitor = None
@@ -87,10 +104,10 @@ def process_plate():
         visitor_name = None
         visitor_info = None
 
-        if DB_ENABLED:
+        if extensions.DB_ENABLED:
             try:
                 visitor = Visitor.objects(license_plate=plate_text).first()
-                status = "authorized" if visitor else "unauthorized"
+                status = "authorized" if visitor and visitor.authorized else "unauthorized"
                 visitor_name = visitor.name if visitor else None
 
                 # Auto-set entry time on first detection
@@ -127,9 +144,10 @@ def process_plate():
                 print(f"Error querying visitor: {db_err}")
 
         detection_timestamp = datetime.utcnow()
-        if DB_ENABLED:
+        if extensions.DB_ENABLED:
             try:
-                original_bytes = open(temp_path, "rb").read()
+                with open(temp_path, "rb") as original_file:
+                    original_bytes = original_file.read()
                 processed_bytes = buffer.tobytes()
                 original_path, processed_path = save_detection_images(original_bytes, processed_bytes)
 
@@ -166,7 +184,7 @@ def process_plate():
 
     except Exception as e:
         print(f"Error processing image: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"success": False, "error": "Image processing failed"}), 500
     finally:
         try:
             if os.path.exists(temp_path):
@@ -180,20 +198,18 @@ def process_plate():
 @detection_bp.route("/process_video", methods=["POST"])
 @login_required
 def process_video():
-    plate_detection_model = get_plate_detection_model()
-    ocr_model = get_ocr_model()
-    if plate_detection_model is None or ocr_model is None:
-        return jsonify({"error": "Models not loaded properly"}), 500
     if "video" not in request.files:
-        return jsonify({"error": "No video file provided"}), 400
+        return jsonify({"success": False, "error": "No video file provided"}), 400
 
     video = request.files["video"]
-    if video.filename == "":
-        return jsonify({"error": "No selected file"}), 400
+    safe_filename = secure_filename(video.filename or "")
+    if not safe_filename:
+        return jsonify({"success": False, "error": "No selected file"}), 400
 
-    file_ext = video.filename.rsplit(".", 1)[1].lower() if "." in video.filename else ""
+    file_ext = safe_filename.rsplit(".", 1)[1].lower() if "." in safe_filename else ""
     if file_ext not in ALLOWED_VIDEO_EXTENSIONS:
         return jsonify({
+            "success": False,
             "error": f'Unsupported file type. Allowed: {", ".join(ALLOWED_VIDEO_EXTENSIONS)}'
         }), 400
 
@@ -202,13 +218,21 @@ def process_video():
     video.seek(0)
     if file_size > MAX_VIDEO_SIZE:
         return jsonify({
+            "success": False,
             "error": f"Video file size exceeds limit of {MAX_VIDEO_SIZE / 1024 / 1024:.2f} MB"
         }), 400
 
+    plate_detection_model = get_plate_detection_model()
+    ocr_model = get_ocr_model()
+    if plate_detection_model is None or ocr_model is None:
+        return jsonify({"success": False, "error": "Models not loaded properly"}), 503
+
     import cv2
     os.makedirs(TEMP_DIR, exist_ok=True)
-    temp_path = os.path.join(TEMP_DIR, video.filename)
-    output_path = os.path.join(TEMP_DIR, f"processed_{video.filename}")
+    temp_path = os.path.join(TEMP_DIR, f"upload_{uuid.uuid4().hex}_{safe_filename}")
+    output_path = os.path.join(TEMP_DIR, f"processed_{uuid.uuid4().hex}_{safe_filename}")
+    cap = None
+    out = None
 
     try:
         video.save(temp_path)
@@ -216,18 +240,24 @@ def process_video():
         if not cap.isOpened():
             raise Exception("Could not open video file")
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if frame_width <= 0 or frame_height <= 0:
+            raise ValueError("Video has invalid dimensions")
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+        if not out.isOpened():
+            raise ValueError("Could not create processed video")
 
         frame_count = 0
         processed_frames = 0
         best_detections = {}
         last_frame = None
+        last_detection_time = {}
+        frame_skip = max(int(get_video_frame_skip()), 1)
 
         while True:
             ret, frame = cap.read()
@@ -235,9 +265,11 @@ def process_video():
                 break
 
             frame_count += 1
-            if frame_count % VIDEO_FRAME_SKIP == 0:
+            output_frame = frame
+            if frame_count % frame_skip == 0:
                 detection_data, processed_img, current_frame = process_frame_and_detect(
-                    frame, frame_count, plate_detection_model, ocr_model, None, last_frame
+                    frame, frame_count, plate_detection_model, ocr_model,
+                    last_detection_time, last_frame
                 )
                 if detection_data:
                     plate_text = detection_data["plate_text"]
@@ -249,17 +281,21 @@ def process_video():
                         except Exception as emit_err:
                             print(f"Error emitting detection: {emit_err}")
 
-                out.write(processed_img if processed_img is not None else frame)
+                # The OCR helper returns a plate crop, not a full video frame.
+                # Only write frames that match the writer's configured size.
+                if (processed_img is not None and
+                        processed_img.shape[1] == frame_width and
+                        processed_img.shape[0] == frame_height):
+                    output_frame = processed_img
                 processed_frames += 1
                 last_frame = current_frame
 
-        cap.release()
-        out.release()
+            out.write(output_frame)
 
-        video_base64 = None
-        if os.path.exists(output_path):
-            with open(output_path, "rb") as vf:
-                video_base64 = base64.b64encode(vf.read()).decode("utf-8")
+        cap.release()
+        cap = None
+        out.release()
+        out = None
 
         for path in [temp_path, output_path]:
             if os.path.exists(path):
@@ -271,17 +307,21 @@ def process_video():
             "total_frames": total_frames,
             "processed_frames": processed_frames,
             "detections": list(best_detections.values()),
-            "processed_video": video_base64,
+            "processed_video": None,
         })
 
     except Exception as e:
+        if cap is not None:
+            cap.release()
+        if out is not None:
+            out.release()
         for path in [temp_path, output_path]:
             if os.path.exists(path):
                 try:
                     os.remove(path)
                 except Exception:
                     pass
-        return jsonify({"error": f"An error occurred during video processing: {e}"}), 500
+        return jsonify({"success": False, "error": f"An error occurred during video processing: {e}"}), 500
 
 
 # ── Live camera MJPEG stream ─────────────────────────────────────────────────
@@ -305,7 +345,7 @@ def video_feed():
 @login_required
 @db_required
 def detection_history():
-    page = request.args.get("page", 1, type=int)
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
     per_page = 10
     skip = (page - 1) * per_page
     total = DetectionResult.objects.count()
@@ -333,7 +373,6 @@ def uploaded_images():
         detections = DetectionResult.objects.order_by("-timestamp").all()
         return render_template("uploaded_images.html", detections=detections)
     except Exception as e:
-        from flask import flash
         print(f"Error retrieving detections: {e}")
         flash("An error occurred while loading images. Please try again.", "error")
         return render_template("uploaded_images.html", detections=[])
@@ -346,8 +385,10 @@ def uploaded_images():
 @db_required
 def get_detection(detection_id):
     from bson.objectid import InvalidId
+    if not ObjectId.is_valid(detection_id):
+        return jsonify({"success": False, "message": "Invalid detection ID format"}), 400
     try:
-        detection = DetectionResult.objects(id=detection_id).first()
+        detection = DetectionResult.objects(id=ObjectId(detection_id)).first()
         if not detection:
             return jsonify({"success": False, "message": "Detection record not found"}), 404
 
@@ -398,10 +439,13 @@ def get_detection(detection_id):
             "status": detection.status,
             "visitor_name": detection.visitor_name,
             "processed_by": processed_by_username,
+            "original_image_url": f"/api/images/{detection_id}/original",
+            "processed_image_url": f"/api/images/{detection_id}/processed",
             "original_image": encode_detection_image(detection.original_image_path, detection.original_image),
             "processed_image": encode_detection_image(detection.processed_image_path, detection.processed_image),
             "visitor_info": visitor_info,
         })
+
     except Exception as e:
         print(f"Error fetching detection {detection_id}: {e}")
         return jsonify({"success": False, "message": f"Error fetching detection details: {e}"}), 500
@@ -446,7 +490,7 @@ def export_detections():
                 query = query.filter(timestamp__gte=now - timedelta(days=30))
 
         results = query.order_by("-timestamp")
-        if not results:
+        if results.count() == 0:
             return jsonify({"error": "No data found for the selected filters"}), 404
 
         if fmt == "csv":
@@ -504,13 +548,45 @@ def export_detections():
 
 # ── Single detection image retrieval ─────────────────────────────────────────
 
+@detection_bp.route("/api/images/<string:detection_id>/<string:img_type>")
+@login_required
+@db_required
+def serve_detection_image_file(detection_id, img_type):
+    if not ObjectId.is_valid(detection_id):
+        return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
+    try:
+        detection = DetectionResult.objects(id=ObjectId(detection_id)).first()
+        if not detection:
+            return jsonify({"success": False, "message": "Detection record not found."}), 404
+
+        target_path = detection.original_image_path if img_type == "original" else detection.processed_image_path
+        target_bytes = detection.original_image if img_type == "original" else detection.processed_image
+
+        file_path = get_image_file_path(target_path)
+        if file_path:
+            res = send_file(file_path, mimetype="image/jpeg")
+            res.headers["Cache-Control"] = "public, max-age=3600"
+            return res
+
+        raw_bytes = target_bytes
+        if raw_bytes:
+            res = Response(raw_bytes, mimetype="image/jpeg")
+            res.headers["Cache-Control"] = "public, max-age=3600"
+            return res
+
+        return jsonify({"success": False, "message": "Image content not available"}), 444
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @detection_bp.route("/api/images/<string:detection_id>")
 @login_required
 @db_required
 def get_detection_image(detection_id):
-    from bson.objectid import InvalidId
+    if not ObjectId.is_valid(detection_id):
+        return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
     try:
-        detection = DetectionResult.objects(id=detection_id).first()
+        detection = DetectionResult.objects(id=ObjectId(detection_id)).first()
     except InvalidId:
         return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
 
@@ -519,13 +595,16 @@ def get_detection_image(detection_id):
 
     return jsonify({
         "success": True,
-        "original_image": base64.b64encode(detection.original_image).decode("utf-8") if detection.original_image else "",
-        "processed_image": base64.b64encode(detection.processed_image).decode("utf-8") if detection.processed_image else "",
+        "original_image_url": f"/api/images/{detection_id}/original",
+        "processed_image_url": f"/api/images/{detection_id}/processed",
+        "original_image": "",
+        "processed_image": "",
         "plate_number": detection.plate_number,
         "status": detection.status,
         "timestamp": utc_to_cairo(detection.timestamp) if detection.timestamp else None,
         "visitor_name": detection.visitor_name,
     })
+
 
 
 # ── Recent activity feed (last 10 detections) ─────────────────────────────

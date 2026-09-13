@@ -16,7 +16,7 @@ from flask import Blueprint, render_template, request, jsonify, redirect, url_fo
 from flask_login import login_required, current_user
 from mongoengine.queryset.visitor import Q
 
-from ealpr.extensions import DB_ENABLED
+from ealpr import extensions
 from ealpr.decorators import db_required
 from models import Visitor
 from ealpr.utils import utc_to_cairo
@@ -26,7 +26,7 @@ visitors_bp = Blueprint("visitors", __name__)
 
 @visitors_bp.before_request
 def check_db_available():
-    if not DB_ENABLED:
+    if not extensions.DB_ENABLED:
         if request.path.startswith("/api/") or request.is_json:
             return jsonify({
                 "success": False,
@@ -132,17 +132,26 @@ def manage_visitors():
 @login_required
 @db_required
 def add_visitor():
-    name = request.form.get("name")
-    visitor_code = request.form.get("visitor_code")
-    license_plate = request.form.get("license_plate")
-    status = request.form.get("status", "pending")
-    responsible_department = request.form.get("responsible_department")
-    general_department = request.form.get("general_department")
+    data = request.get_json(silent=True) if request.is_json else request.form
+    data = data or {}
+    name = str(data.get("name", "")).strip()
+    visitor_code = str(data.get("visitor_code", "")).strip() or None
+    license_plate = str(data.get("license_plate", "")).strip()
+    status = str(data.get("status", "pending")).strip().lower()
+    responsible_department = data.get("responsible_department")
+    general_department = data.get("general_department")
 
-    if not all([name, visitor_code, license_plate]):
-        return jsonify({"success": False, "message": "All fields (name, visitor_code, license_plate) are required"}), 400
+    if not all([name, license_plate]):
+        return jsonify({"success": False, "message": "Name and license plate are required"}), 400
+    if status not in {"pending", "authorized", "unauthorized"}:
+        return jsonify({"success": False, "message": "Invalid visitor status"}), 400
+    if visitor_code is None:
+        visitor_code = f"V{int(datetime.utcnow().timestamp() * 1000)}"
 
-    existing_visitor = Visitor.objects(Q(visitor_code=visitor_code) | Q(license_plate=license_plate)).first()
+    duplicate_query = Q(license_plate=license_plate)
+    if visitor_code:
+        duplicate_query = Q(visitor_code=visitor_code) | duplicate_query
+    existing_visitor = Visitor.objects(duplicate_query).first()
     if existing_visitor:
         return jsonify({"success": False, "message": "Visitor with this code or license plate already exists"}), 400
 
@@ -154,7 +163,7 @@ def add_visitor():
             status=status,
             responsible_department=responsible_department,
             general_department=general_department,
-            authorized=False,
+            authorized=status == "authorized",
             entry_datetime_utc=datetime.utcnow(),
         )
         if visitor_code.startswith("V"):
@@ -193,12 +202,13 @@ def get_visitor(visitor_id):
     if not visitor:
         return jsonify({"success": False, "message": "Visitor not found"}), 404
     return jsonify({
+        "success": True,
         "id": str(visitor.id),
         "name": visitor.name,
         "visitor_id": str(visitor.visitor_id),
         "visitor_code": visitor.visitor_code,
         "license_plate": visitor.license_plate,
-        "entry_time": utc_to_cairo(visitor.entry_time),
+        "entry_time": visitor.entry_time or "",
         "entry_date": visitor.entry_date,
         "exit_time": utc_to_cairo(visitor.exit_time) if visitor.exit_time else None,
         "authorized": visitor.authorized,
@@ -220,7 +230,9 @@ def update_visitor(visitor_id):
     if not visitor:
         return jsonify({"success": False, "message": "Visitor not found"}), 404
 
-    data = request.get_json()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "A JSON object is required"}), 400
     if "name" in data:
         visitor.name = data["name"]
     if "visitor_code" in data:
@@ -232,11 +244,22 @@ def update_visitor(visitor_id):
                 return jsonify({"success": False, "message": "Invalid visitor_code format"}), 400
     if "license_plate" in data:
         visitor.license_plate = data["license_plate"]
-    if "authorized" in data:
-        visitor.authorized = data["authorized"]
-        visitor.status = "authorized" if data["authorized"] else "unauthorized"
+    if "status" in data:
+        if data["status"] not in {"pending", "authorized", "unauthorized"}:
+            return jsonify({"success": False, "message": "Invalid visitor status"}), 400
+        visitor.status = data["status"]
+        visitor.authorized = data["status"] == "authorized"
+    elif "authorized" in data:
+        visitor.authorized = bool(data["authorized"])
+        visitor.status = "authorized" if visitor.authorized else "unauthorized"
     if "exit_time" in data:
-        visitor.exit_time = datetime.strptime(data["exit_time"], "%Y-%m-%d %H:%M:%S")
+        try:
+            visitor.exit_time = (
+                datetime.strptime(data["exit_time"], "%Y-%m-%d %H:%M:%S")
+                if data["exit_time"] else None
+            )
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "message": "Invalid exit time format"}), 400
 
     entry_date_str = data.get("entry_date")
     entry_time_str = data.get("entry_time")
