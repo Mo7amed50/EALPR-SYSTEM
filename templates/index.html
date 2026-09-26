@@ -609,50 +609,76 @@
 
             videoLoadingOverlay.classList.remove('d-none');
             videoUploadBtn.disabled = true;
+            videoDetections.innerHTML = '<div class="col-12 text-center text-muted py-2"><i class="fas fa-spinner fa-spin me-1"></i>Processing video in background…</div>';
 
+            // Step 1: Submit video → get job_id immediately
             $.ajax({
                 url: '/process_video',
                 type: 'POST',
                 data: formData,
                 contentType: false,
                 processData: false,
+                timeout: 30000,
                 success: function (res) {
-                    videoLoadingOverlay.classList.add('d-none');
-                    videoUploadBtn.disabled = false;
-                    if (res.success) {
-                        showNotification('Success', 'Video processing complete!', 'authorized');
-                        videoDetections.innerHTML = '';
-                        if (res.detections.length > 0) {
-                            res.detections.forEach(d => {
-                                let badge = `<span class="badge-status ${d.status}">${d.status}</span>`;
-                                let div = document.createElement('div');
-                                div.className = 'col-md-6 mb-2';
-                                div.innerHTML = `
-                                <div class="card border-custom p-3 bg-surface d-flex flex-row justify-content-between align-items-center">
-                                    <div>
-                                        <div class="fw-700 font-mono text-accent">${d.plate_text}</div>
-                                        <div class="small text-muted">${d.visitor_info ? d.visitor_info.name : 'Unknown Visitor'}</div>
-                                    </div>
-                                    <div>${badge}</div>
-                                </div>
-                            `;
-                                videoDetections.appendChild(div);
-                            });
-                        } else {
-                            videoDetections.innerHTML = '<div class="col-12 text-center text-muted py-2">No plates detected in video.</div>';
-                        }
-                        updateDashboardStats();
-                    } else {
-                        showNotification('Failed', res.error || 'Video could not be processed', 'unauthorized');
+                    if (!res.success || !res.job_id) {
+                        videoLoadingOverlay.classList.add('d-none');
+                        videoUploadBtn.disabled = false;
+                        showNotification('Failed', res.error || 'Video could not be submitted', 'unauthorized');
+                        return;
                     }
+                    showNotification('Uploaded', 'Video uploaded — processing in background…', 'info');
+                    // Step 2: Poll for job completion
+                    const pollInterval = setInterval(function () {
+                        $.get('/api/video_job/' + res.job_id, function (job) {
+                            if (!job.success) return;
+                            if (job.status === 'done') {
+                                clearInterval(pollInterval);
+                                videoLoadingOverlay.classList.add('d-none');
+                                videoUploadBtn.disabled = false;
+                                showNotification('Success', 'Video processing complete!', 'authorized');
+                                videoDetections.innerHTML = '';
+                                if (job.detections && job.detections.length > 0) {
+                                    job.detections.forEach(function(d) {
+                                        let badge = `<span class="badge-status ${d.status}">${d.status}</span>`;
+                                        let div = document.createElement('div');
+                                        div.className = 'col-md-6 mb-2';
+                                        div.innerHTML = `
+                                        <div class="card border-custom p-3 bg-surface d-flex flex-row justify-content-between align-items-center">
+                                            <div>
+                                                <div class="fw-700 font-mono text-accent">${d.plate_text}</div>
+                                                <div class="small text-muted">${d.visitor_info ? d.visitor_info.name : 'Unknown Visitor'}</div>
+                                            </div>
+                                            <div>${badge}</div>
+                                        </div>
+                                    `;
+                                        videoDetections.appendChild(div);
+                                    });
+                                } else {
+                                    videoDetections.innerHTML = '<div class="col-12 text-center text-muted py-2">No plates detected in video.</div>';
+                                }
+                                updateDashboardStats();
+                            } else if (job.status === 'error') {
+                                clearInterval(pollInterval);
+                                videoLoadingOverlay.classList.add('d-none');
+                                videoUploadBtn.disabled = false;
+                                showNotification('Failed', job.error || 'Video processing failed', 'unauthorized');
+                                videoDetections.innerHTML = '<div class="col-12 text-center text-muted py-2">Processing failed.</div>';
+                            } else {
+                                // Still running — update progress text
+                                const progress = job.progress || 0;
+                                videoDetections.innerHTML = `<div class="col-12 text-center text-muted py-2"><i class="fas fa-spinner fa-spin me-1"></i>Processing… ${progress}%</div>`;
+                            }
+                        });
+                    }, 1500);
                 },
                 error: function () {
                     videoLoadingOverlay.classList.add('d-none');
                     videoUploadBtn.disabled = false;
-                    showNotification('Error', 'Network error processing video', 'unauthorized');
+                    showNotification('Error', 'Network error submitting video', 'unauthorized');
                 }
             });
         });
+
 
         // Live Stream Camera Feed Handler
         const videoStream = document.getElementById('videoStream');

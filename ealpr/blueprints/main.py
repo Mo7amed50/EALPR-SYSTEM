@@ -34,17 +34,28 @@ def after_request(response):
     if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
         return response
 
-    try:
-        activity = UserActivity(
-            user=current_user,
-            action=request.endpoint or request.path,
-            details=f"{request.method} {request.path}",
-            ip_address=request.remote_addr,
-            timestamp=datetime.utcnow(),
-        )
-        activity.save()
-    except Exception:
-        pass
+    # Save activity in a background thread so it never delays the HTTP response
+    import threading
+    from flask import copy_current_request_context
+    endpoint = request.endpoint or request.path
+    method_path = f"{request.method} {request.path}"
+    ip = request.remote_addr
+    user = current_user._get_current_object() if hasattr(current_user, '_get_current_object') else None
+
+    def _save():
+        try:
+            activity = UserActivity(
+                user=user,
+                action=endpoint,
+                details=method_path,
+                ip_address=ip,
+                timestamp=datetime.utcnow(),
+            )
+            activity.save()
+        except Exception:
+            pass
+
+    threading.Thread(target=_save, daemon=True).start()
     return response
 
 
@@ -62,7 +73,7 @@ def index():
     total_detections = DetectionResult.objects.count()
     authorized_visitors = Visitor.objects(authorized=True).count()
     unauthorized_visitors = Visitor.objects(authorized=False).count()
-    active_visitors = Visitor.objects(exit_time__exists=False).count()
+    active_visitors = Visitor.objects(exit_time__in=[None, ""]).count()
     return render_template(
         "index.html",
         total_detections=total_detections,
@@ -89,7 +100,7 @@ def get_dashboard_stats():
         total_detections = DetectionResult.objects.count()
         authorized_visitors = Visitor.objects(authorized=True).count()
         unauthorized_visitors = Visitor.objects(authorized=False).count()
-        active_visitors = Visitor.objects(exit_time__exists=False).count()
+        active_visitors = Visitor.objects(exit_time__in=[None, ""]).count()
         return jsonify({
             "success": True,
             "stats": {

@@ -289,7 +289,7 @@
 
     // --- Clear Button ---
     $('#clearBtn').on('click', function () {
-        if (!confirm('Are you sure you want to clear all detection records? This action cannot be undone.')) {
+        if (!window.confirm('Are you sure you want to clear all detection records? This action cannot be undone.')) {
             return;
         }
         $.ajax({
@@ -297,15 +297,14 @@
             method: 'POST',
             success: function (response) {
                 if (response.success) {
-                    alert(response.message);
-                    location.reload(); // Refresh the page to show the updated (empty) list
+                    showNotification('Success', response.message || 'Detection records cleared successfully!', 'authorized');
+                    setTimeout(() => location.reload(), 900);
                 } else {
-                    alert(response.message);
+                    showNotification('Error', response.message || 'Failed to clear records', 'unauthorized');
                 }
             },
-            error: function (xhr, status, error) {
-                console.error('Error clearing detection records:', status, error);
-                alert('An error occurred while clearing detection records.');
+            error: function (xhr) {
+                showNotification('Error', (xhr.responseJSON && xhr.responseJSON.message) || 'An error occurred while clearing detection records.', 'unauthorized');
             }
         });
     });

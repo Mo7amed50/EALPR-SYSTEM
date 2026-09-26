@@ -36,6 +36,26 @@ def check_db_available():
         return redirect(url_for("main.index"))
 
 
+def _find_visitor(visitor_id_str):
+    """Resolve a Visitor by sequence visitor_id (int), MongoDB ObjectId, or visitor_code."""
+    if not visitor_id_str:
+        return None
+    visitor_id_str = str(visitor_id_str).strip()
+    if visitor_id_str.isdigit():
+        v = Visitor.objects(visitor_id=int(visitor_id_str)).first()
+        if v:
+            return v
+    from bson.objectid import ObjectId
+    if ObjectId.is_valid(visitor_id_str):
+        v = Visitor.objects(id=ObjectId(visitor_id_str)).first()
+        if v:
+            return v
+    v = Visitor.objects(visitor_code=visitor_id_str).first()
+    if v:
+        return v
+    return Visitor.objects(license_plate=visitor_id_str).first()
+
+
 # ── Read-only visitor list ───────────────────────────────────────────────────
 
 @visitors_bp.route("/visitors")
@@ -71,12 +91,7 @@ def manage_visitors():
             flash("Visitor ID is required", "error")
             return redirect(url_for("visitors.manage_visitors"))
 
-        try:
-            visitor = Visitor.objects(visitor_id=int(visitor_id)).first()
-        except ValueError:
-            flash("Invalid visitor ID", "error")
-            return redirect(url_for("visitors.manage_visitors"))
-
+        visitor = _find_visitor(visitor_id)
         if not visitor:
             flash("Visitor not found", "error")
             return redirect(url_for("visitors.manage_visitors"))
@@ -101,12 +116,6 @@ def manage_visitors():
                 visitor.name = name
             if visitor_code:
                 visitor.visitor_code = visitor_code
-                if visitor_code.startswith("V"):
-                    try:
-                        visitor.visitor_id = int(visitor_code.lstrip("V"))
-                    except ValueError:
-                        flash("Invalid visitor code format", "error")
-                        return redirect(url_for("visitors.manage_visitors"))
             if license_plate:
                 visitor.license_plate = license_plate
             flash("Visitor information updated successfully", "success")
@@ -114,7 +123,14 @@ def manage_visitors():
         visitor.save()
         return redirect(url_for("visitors.manage_visitors"))
 
-    search_query = request.args.get("search_query", "")
+    search_query = request.args.get("search_query", "").strip()
+    id_param = request.args.get("id", "").strip()
+
+    if id_param:
+        target = _find_visitor(id_param)
+        if target:
+            return render_template("manage_visitors.html", visitors=[target], search_query=id_param)
+
     query = Visitor.objects
     if search_query:
         query = query.filter(
@@ -145,8 +161,6 @@ def add_visitor():
         return jsonify({"success": False, "message": "Name and license plate are required"}), 400
     if status not in {"pending", "authorized", "unauthorized"}:
         return jsonify({"success": False, "message": "Invalid visitor status"}), 400
-    if visitor_code is None:
-        visitor_code = f"V{int(datetime.utcnow().timestamp() * 1000)}"
 
     duplicate_query = Q(license_plate=license_plate)
     if visitor_code:
@@ -166,11 +180,6 @@ def add_visitor():
             authorized=status == "authorized",
             entry_datetime_utc=datetime.utcnow(),
         )
-        if visitor_code.startswith("V"):
-            try:
-                visitor.visitor_id = int(visitor_code.lstrip("V"))
-            except ValueError:
-                return jsonify({"success": False, "message": "Invalid visitor code format. Must be V<number>"}), 400
         visitor.save()
         return jsonify({
             "success": True,
@@ -196,20 +205,18 @@ def add_visitor():
 @login_required
 @db_required
 def get_visitor(visitor_id):
-    if not visitor_id.isdigit():
-        return jsonify({"success": False, "message": "Invalid visitor ID"}), 400
-    visitor = Visitor.objects(visitor_id=int(visitor_id)).first()
+    visitor = _find_visitor(visitor_id)
     if not visitor:
         return jsonify({"success": False, "message": "Visitor not found"}), 404
     return jsonify({
         "success": True,
         "id": str(visitor.id),
         "name": visitor.name,
-        "visitor_id": str(visitor.visitor_id),
-        "visitor_code": visitor.visitor_code,
+        "visitor_id": str(visitor.visitor_id) if visitor.visitor_id else "",
+        "visitor_code": visitor.visitor_code or "",
         "license_plate": visitor.license_plate,
         "entry_time": visitor.entry_time or "",
-        "entry_date": visitor.entry_date,
+        "entry_date": visitor.entry_date or "",
         "exit_time": utc_to_cairo(visitor.exit_time) if visitor.exit_time else None,
         "authorized": visitor.authorized,
         "status": visitor.status,
@@ -224,9 +231,7 @@ def get_visitor(visitor_id):
 @login_required
 @db_required
 def update_visitor(visitor_id):
-    if not visitor_id.isdigit():
-        return jsonify({"success": False, "message": "Invalid visitor ID"}), 400
-    visitor = Visitor.objects(visitor_id=int(visitor_id)).first()
+    visitor = _find_visitor(visitor_id)
     if not visitor:
         return jsonify({"success": False, "message": "Visitor not found"}), 404
 
@@ -235,13 +240,8 @@ def update_visitor(visitor_id):
         return jsonify({"success": False, "message": "A JSON object is required"}), 400
     if "name" in data:
         visitor.name = data["name"]
-    if "visitor_code" in data:
+    if "visitor_code" in data and data["visitor_code"]:
         visitor.visitor_code = data["visitor_code"]
-        if data["visitor_code"].startswith("V"):
-            try:
-                visitor.visitor_id = int(data["visitor_code"].lstrip("V"))
-            except ValueError:
-                return jsonify({"success": False, "message": "Invalid visitor_code format"}), 400
     if "license_plate" in data:
         visitor.license_plate = data["license_plate"]
     if "status" in data:
@@ -252,6 +252,10 @@ def update_visitor(visitor_id):
     elif "authorized" in data:
         visitor.authorized = bool(data["authorized"])
         visitor.status = "authorized" if visitor.authorized else "unauthorized"
+    if "responsible_department" in data:
+        visitor.responsible_department = data["responsible_department"]
+    if "general_department" in data:
+        visitor.general_department = data["general_department"]
     if "exit_time" in data:
         try:
             visitor.exit_time = (
@@ -281,9 +285,7 @@ def update_visitor(visitor_id):
 @login_required
 @db_required
 def delete_visitor(visitor_id):
-    if not visitor_id.isdigit():
-        return jsonify({"success": False, "message": "Invalid visitor ID"}), 400
-    visitor = Visitor.objects(visitor_id=int(visitor_id)).first()
+    visitor = _find_visitor(visitor_id)
     if not visitor:
         return jsonify({"success": False, "message": "Visitor not found"}), 404
     visitor.delete()

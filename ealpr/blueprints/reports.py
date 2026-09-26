@@ -50,56 +50,73 @@ def reports():
 @db_required
 def get_visitor_stats():
     try:
+        col = Visitor._get_collection()
+        docs = list(col.find({}, {
+            "status": 1,
+            "entry_datetime_utc": 1,
+            "entry_time": 1,
+            "responsible_department": 1,
+        }))
+
+        total_visitors = len(docs)
+        authorized_visitors = sum(1 for d in docs if d.get("status") == "authorized")
+        unauthorized_visitors = sum(1 for d in docs if d.get("status") == "unauthorized")
+        pending_visitors = sum(1 for d in docs if d.get("status") == "pending")
+
         end_date = datetime.utcnow()
         month_start = end_date - timedelta(days=30)
-
-        total_visitors = Visitor.objects.count()
-        authorized_visitors = Visitor.objects(status="authorized").count()
-        unauthorized_visitors = Visitor.objects(status="unauthorized").count()
-        pending_visitors = Visitor.objects(status="pending").count()
 
         # Last 7 days daily breakdown
         daily_traffic = []
         daily_status = []
         for i in range(7):
             day = end_date - timedelta(days=i)
-            day_start = day.replace(hour=0, minute=0, second=0)
-            day_end = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            d_str = day.strftime("%Y-%m-%d")
+            day_visitors = [
+                d for d in docs
+                if d.get("entry_datetime_utc") and d["entry_datetime_utc"].strftime("%Y-%m-%d") == d_str
+            ]
+            auth = sum(1 for d in day_visitors if d.get("status") == "authorized")
+            unauth = sum(1 for d in day_visitors if d.get("status") == "unauthorized")
+            pending = sum(1 for d in day_visitors if d.get("status") == "pending")
 
-            count = Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end).count()
-            auth = Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end, status="authorized").count()
-            unauth = Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end, status="unauthorized").count()
-            pending = Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end, status="pending").count()
-
-            daily_traffic.append({"date": day.strftime("%Y-%m-%d"), "day": day.strftime("%a"), "count": count})
-            daily_status.append({"date": day.strftime("%Y-%m-%d"), "authorized": auth, "unauthorized": unauth, "pending": pending})
+            daily_traffic.append({"date": d_str, "day": day.strftime("%a"), "count": len(day_visitors)})
+            daily_status.append({"date": d_str, "authorized": auth, "unauthorized": unauth, "pending": pending})
 
         daily_traffic.reverse()
         daily_status.reverse()
 
         # Peak hours (last 30 days)
+        month_docs = [
+            d for d in docs
+            if d.get("entry_datetime_utc") and d["entry_datetime_utc"] >= month_start
+        ]
         hour_counts = {}
         for hour in range(24):
-            hour_key = f"{hour:02d}:00"
-            hour_counts[hour_key] = {
-                "total": Visitor.objects(entry_datetime_utc__gte=month_start, entry_time__startswith=f"{hour:02d}:").count(),
-                "authorized": Visitor.objects(entry_datetime_utc__gte=month_start, entry_time__startswith=f"{hour:02d}:", status="authorized").count(),
-                "unauthorized": Visitor.objects(entry_datetime_utc__gte=month_start, entry_time__startswith=f"{hour:02d}:", status="unauthorized").count(),
-                "pending": Visitor.objects(entry_datetime_utc__gte=month_start, entry_time__startswith=f"{hour:02d}:", status="pending").count(),
+            hour_prefix = f"{hour:02d}:"
+            h_docs = [
+                d for d in month_docs
+                if (d.get("entry_time") and str(d["entry_time"]).startswith(hour_prefix)) or
+                   (d.get("entry_datetime_utc") and d["entry_datetime_utc"].hour == hour)
+            ]
+            hour_counts[f"{hour:02d}:00"] = {
+                "total": len(h_docs),
+                "authorized": sum(1 for d in h_docs if d.get("status") == "authorized"),
+                "unauthorized": sum(1 for d in h_docs if d.get("status") == "unauthorized"),
+                "pending": sum(1 for d in h_docs if d.get("status") == "pending"),
             }
 
         # Department stats
         dept_stats = {}
-        departments = Visitor.objects.distinct("responsible_department")
-        for dept in departments:
+        for d in docs:
+            dept = d.get("responsible_department")
             if dept:
-                total = Visitor.objects(responsible_department=dept).count()
-                dept_stats[dept] = {
-                    "total": total,
-                    "authorized": Visitor.objects(responsible_department=dept, status="authorized").count(),
-                    "unauthorized": Visitor.objects(responsible_department=dept, status="unauthorized").count(),
-                    "pending": Visitor.objects(responsible_department=dept, status="pending").count(),
-                }
+                if dept not in dept_stats:
+                    dept_stats[dept] = {"total": 0, "authorized": 0, "unauthorized": 0, "pending": 0}
+                dept_stats[dept]["total"] += 1
+                st = d.get("status")
+                if st in dept_stats[dept]:
+                    dept_stats[dept][st] += 1
 
         return jsonify({
             "success": True,
@@ -128,15 +145,23 @@ def export_analytics_excel():
     try:
         wb = Workbook()
 
+        col = Visitor._get_collection()
+        docs = list(col.find({}, {
+            "status": 1,
+            "entry_datetime_utc": 1,
+            "entry_time": 1,
+            "responsible_department": 1,
+        }))
+
         # Summary sheet
         ws_summary = wb.active
         ws_summary.title = "Summary"
         ws_summary.append(["Metric", "Value"])
 
-        total_visitors = Visitor.objects.count()
-        authorized_visitors = Visitor.objects(status="authorized").count()
-        unauthorized_visitors = Visitor.objects(status="unauthorized").count()
-        pending_visitors = Visitor.objects(status="pending").count()
+        total_visitors = len(docs)
+        authorized_visitors = sum(1 for d in docs if d.get("status") == "authorized")
+        unauthorized_visitors = sum(1 for d in docs if d.get("status") == "unauthorized")
+        pending_visitors = sum(1 for d in docs if d.get("status") == "pending")
 
         for row in [
             ["Total Visitors", total_visitors],
@@ -148,8 +173,8 @@ def export_analytics_excel():
             ws_summary.append(row)
         for cell in ws_summary[1]:
             cell.font = Font(bold=True)
-        for col in ["A", "B"]:
-            ws_summary.column_dimensions[col].width = 20
+        for col_name in ["A", "B"]:
+            ws_summary.column_dimensions[col_name].width = 20
 
         # Daily traffic sheet (last 30 days)
         ws_daily = wb.create_sheet("Daily Traffic")
@@ -157,53 +182,77 @@ def export_analytics_excel():
         end_date = datetime.utcnow()
         for i in range(30):
             day = end_date - timedelta(days=i)
-            day_start = day.replace(hour=0, minute=0, second=0)
-            day_end = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            d_str = day.strftime("%Y-%m-%d")
+            day_visitors = [
+                d for d in docs
+                if d.get("entry_datetime_utc") and d["entry_datetime_utc"].strftime("%Y-%m-%d") == d_str
+            ]
+            auth = sum(1 for d in day_visitors if d.get("status") == "authorized")
+            unauth = sum(1 for d in day_visitors if d.get("status") == "unauthorized")
+            pending = sum(1 for d in day_visitors if d.get("status") == "pending")
             ws_daily.append([
-                day.strftime("%Y-%m-%d"),
+                d_str,
                 day.strftime("%a"),
-                Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end).count(),
-                Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end, status="authorized").count(),
-                Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end, status="unauthorized").count(),
-                Visitor.objects(entry_datetime_utc__gte=day_start, entry_datetime_utc__lt=day_end, status="pending").count(),
+                len(day_visitors),
+                auth,
+                unauth,
+                pending,
             ])
         for cell in ws_daily[1]:
             cell.font = Font(bold=True)
-        for col in ["A", "B", "C", "D", "E", "F"]:
-            ws_daily.column_dimensions[col].width = 15
+        for col_name in ["A", "B", "C", "D", "E", "F"]:
+            ws_daily.column_dimensions[col_name].width = 15
 
         # Hourly traffic sheet
         ws_hourly = wb.create_sheet("Hourly Traffic")
         ws_hourly.append(["Hour", "Total", "Authorized", "Unauthorized", "Pending"])
         month_start = end_date - timedelta(days=30)
+        month_docs = [
+            d for d in docs
+            if d.get("entry_datetime_utc") and d["entry_datetime_utc"] >= month_start
+        ]
         for hour in range(24):
             hour_str = f"{hour:02d}:00"
+            hour_prefix = f"{hour:02d}:"
+            h_docs = [
+                d for d in month_docs
+                if (d.get("entry_time") and str(d["entry_time"]).startswith(hour_prefix)) or
+                   (d.get("entry_datetime_utc") and d["entry_datetime_utc"].hour == hour)
+            ]
             ws_hourly.append([
                 hour_str,
-                Visitor.objects(entry_datetime_utc__gte=month_start, entry_time__startswith=f"{hour:02d}:").count(),
-                Visitor.objects(entry_datetime_utc__gte=month_start, entry_time__startswith=f"{hour:02d}:", status="authorized").count(),
-                Visitor.objects(entry_datetime_utc__gte=month_start, entry_time__startswith=f"{hour:02d}:", status="unauthorized").count(),
-                Visitor.objects(entry_datetime_utc__gte=month_start, entry_time__startswith=f"{hour:02d}:", status="pending").count(),
+                len(h_docs),
+                sum(1 for d in h_docs if d.get("status") == "authorized"),
+                sum(1 for d in h_docs if d.get("status") == "unauthorized"),
+                sum(1 for d in h_docs if d.get("status") == "pending"),
             ])
         for cell in ws_hourly[1]:
             cell.font = Font(bold=True)
-        for col in ["A", "B", "C", "D", "E"]:
-            ws_hourly.column_dimensions[col].width = 15
+        for col_name in ["A", "B", "C", "D", "E"]:
+            ws_hourly.column_dimensions[col_name].width = 15
 
         # Department statistics sheet
         ws_dept = wb.create_sheet("Department Statistics")
         ws_dept.append(["Department", "Total Visitors", "Authorized", "Unauthorized", "Pending", "Authorization Rate"])
-        for dept in Visitor.objects.distinct("responsible_department"):
+        dept_stats = {}
+        for d in docs:
+            dept = d.get("responsible_department")
             if dept:
-                total = Visitor.objects(responsible_department=dept).count()
-                auth = Visitor.objects(responsible_department=dept, status="authorized").count()
-                unauth = Visitor.objects(responsible_department=dept, status="unauthorized").count()
-                pending = Visitor.objects(responsible_department=dept, status="pending").count()
-                ws_dept.append([dept, total, auth, unauth, pending, f"{(auth / total * 100) if total > 0 else 0:.1f}%"])
+                if dept not in dept_stats:
+                    dept_stats[dept] = {"total": 0, "authorized": 0, "unauthorized": 0, "pending": 0}
+                dept_stats[dept]["total"] += 1
+                st = d.get("status")
+                if st in dept_stats[dept]:
+                    dept_stats[dept][st] += 1
+
+        for dept, stats in sorted(dept_stats.items(), key=lambda x: x[1]["total"], reverse=True):
+            tot = stats["total"]
+            aut = stats["authorized"]
+            ws_dept.append([dept, tot, aut, stats["unauthorized"], stats["pending"], f"{(aut / tot * 100) if tot > 0 else 0:.1f}%"])
         for cell in ws_dept[1]:
             cell.font = Font(bold=True)
-        for col in ["A", "B", "C", "D", "E", "F"]:
-            ws_dept.column_dimensions[col].width = 20
+        for col_name in ["A", "B", "C", "D", "E", "F"]:
+            ws_dept.column_dimensions[col_name].width = 20
 
         excel_file = io.BytesIO()
         wb.save(excel_file)
@@ -266,29 +315,34 @@ def export_report(type):
         ws.append(headers)
 
         header_row = 3
-        for col in range(1, len(headers) + 1):
-            cell = ws.cell(row=header_row, column=col)
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=header_row, column=col_idx)
             cell.font = header_font
             cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
             cell.border = thin_border
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
         for visitor in visitors:
-            entry_time = utc_to_cairo(visitor.entry_datetime_utc)
-            date_str, time_str = entry_time.split(" ")
+            entry_time = utc_to_cairo(visitor.entry_datetime_utc) if visitor.entry_datetime_utc else ""
+            if " " in entry_time:
+                date_str, time_str = entry_time.split(" ", 1)
+            else:
+                date_str, time_str = entry_time or "N/A", "N/A"
+
+            status_str = (visitor.status or "pending").title()
             row = [
-                visitor.name,
-                visitor.visitor_code,
-                visitor.license_plate,
+                visitor.name or "N/A",
+                visitor.visitor_code or (f"V{visitor.visitor_id:03d}" if visitor.visitor_id else "N/A"),
+                visitor.license_plate or "N/A",
                 date_str,
                 time_str,
-                visitor.status.title(),
+                status_str,
                 visitor.responsible_department or "N/A",
             ]
             ws.append(row)
             current_row = ws.max_row
-            for col in range(1, len(headers) + 1):
-                cell = ws.cell(row=current_row, column=col)
+            for col_idx in range(1, len(headers) + 1):
+                cell = ws.cell(row=current_row, column=col_idx)
                 cell.font = regular_font
                 cell.border = thin_border
                 cell.alignment = Alignment(horizontal="left")
@@ -296,10 +350,11 @@ def export_report(type):
                     cell.fill = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
 
         column_widths = {"A": 30, "B": 15, "C": 15, "D": 12, "E": 10, "F": 15, "G": 20}
-        for col, width in column_widths.items():
-            ws.column_dimensions[col].width = width
+        for col_name, width in column_widths.items():
+            ws.column_dimensions[col_name].width = width
 
-        ws.auto_filter.ref = f"A3:G{ws.max_row}"
+        if ws.max_row >= 3:
+            ws.auto_filter.ref = f"A3:G{ws.max_row}"
 
         excel_file = io.BytesIO()
         wb.save(excel_file)

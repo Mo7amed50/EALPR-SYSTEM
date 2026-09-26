@@ -80,8 +80,9 @@
                     <tbody>
                         {% for detection in detections %}
                         <tr>
-                            <td>{{ detection.timestamp.strftime('%Y-%m-%d') }}</td>
-                            <td>{{ detection.timestamp.strftime('%H:%M:%S') }}</td>
+                            {% set cairo_dt = detection.timestamp | to_cairo %}
+                            <td>{{ cairo_dt.split(' ')[0] if cairo_dt and ' ' in cairo_dt else (cairo_dt or '-') }}</td>
+                            <td>{{ cairo_dt.split(' ')[1] if cairo_dt and ' ' in cairo_dt else '-' }}</td>
                             <td>{{ detection.plate_number }}</td>
                             <td>
                                 <span

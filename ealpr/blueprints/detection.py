@@ -193,7 +193,91 @@ def process_plate():
             print(f"Error cleaning up temp file: {cleanup_err}")
 
 
-# ── Video upload & batch processing ─────────────────────────────────────────
+# ── Video upload & batch processing (async) ─────────────────────────────────
+#
+# Video processing runs in a background thread so it never blocks the Flask
+# request thread.  The client receives a job_id immediately and polls
+# /api/video_job/<job_id> for progress and results.
+
+import threading as _vthread
+
+_video_jobs = {}
+_video_jobs_lock = _vthread.Lock()
+
+
+def _run_video_job(job_id, temp_path, plate_detection_model, ocr_model, app):
+    """Background thread: process video frames and update job state."""
+    import cv2 as _cv2
+    with app.app_context():
+        with _video_jobs_lock:
+            _video_jobs[job_id]["status"] = "running"
+        cap = None
+        try:
+            cap = _cv2.VideoCapture(temp_path)
+            if not cap.isOpened():
+                raise Exception("Could not open video file")
+
+            total_frames = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) or 0
+            frame_count = 0
+            processed_frames = 0
+            best_detections = {}
+            last_frame = None
+            last_detection_time = {}
+
+            base_skip = max(int(get_video_frame_skip()), 1)
+            frame_skip = max(base_skip, total_frames // 200) if total_frames > 1000 else base_skip
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_count += 1
+                if frame_count % frame_skip == 0:
+                    detection_data, _proc, current_frame = process_frame_and_detect(
+                        frame, frame_count, plate_detection_model, ocr_model,
+                        last_detection_time, last_frame
+                    )
+                    if detection_data:
+                        plate_text = detection_data["plate_text"]
+                        if (plate_text not in best_detections or
+                                detection_data["confidence"] > best_detections[plate_text]["confidence"]):
+                            best_detections[plate_text] = detection_data
+                            try:
+                                socketio.emit("live_detection", detection_data)
+                            except Exception:
+                                pass
+                    processed_frames += 1
+                    last_frame = current_frame
+                    if total_frames > 0:
+                        progress = min(int(frame_count / total_frames * 100), 99)
+                        with _video_jobs_lock:
+                            _video_jobs[job_id]["progress"] = progress
+
+            cap.release()
+            cap = None
+            with _video_jobs_lock:
+                _video_jobs[job_id].update({
+                    "status": "done",
+                    "progress": 100,
+                    "total_frames": total_frames,
+                    "processed_frames": processed_frames,
+                    "detections": list(best_detections.values()),
+                })
+        except Exception as e:
+            with _video_jobs_lock:
+                _video_jobs[job_id].update({"status": "error", "error": str(e)})
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
+
 
 @detection_bp.route("/process_video", methods=["POST"])
 @login_required
@@ -227,101 +311,39 @@ def process_video():
     if plate_detection_model is None or ocr_model is None:
         return jsonify({"success": False, "error": "Models not loaded properly"}), 503
 
-    import cv2
+    from flask import current_app
     os.makedirs(TEMP_DIR, exist_ok=True)
     temp_path = os.path.join(TEMP_DIR, f"upload_{uuid.uuid4().hex}_{safe_filename}")
-    output_path = os.path.join(TEMP_DIR, f"processed_{uuid.uuid4().hex}_{safe_filename}")
-    cap = None
-    out = None
-
     try:
         video.save(temp_path)
-        cap = cv2.VideoCapture(temp_path)
-        if not cap.isOpened():
-            raise Exception("Could not open video file")
-
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if frame_width <= 0 or frame_height <= 0:
-            raise ValueError("Video has invalid dimensions")
-
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
-        if not out.isOpened():
-            raise ValueError("Could not create processed video")
-
-        frame_count = 0
-        processed_frames = 0
-        best_detections = {}
-        last_frame = None
-        last_detection_time = {}
-        frame_skip = max(int(get_video_frame_skip()), 1)
-
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            frame_count += 1
-            output_frame = frame
-            if frame_count % frame_skip == 0:
-                detection_data, processed_img, current_frame = process_frame_and_detect(
-                    frame, frame_count, plate_detection_model, ocr_model,
-                    last_detection_time, last_frame
-                )
-                if detection_data:
-                    plate_text = detection_data["plate_text"]
-                    if (plate_text not in best_detections or
-                            detection_data["confidence"] > best_detections[plate_text]["confidence"]):
-                        best_detections[plate_text] = detection_data
-                        try:
-                            socketio.emit("live_detection", detection_data)
-                        except Exception as emit_err:
-                            print(f"Error emitting detection: {emit_err}")
-
-                # The OCR helper returns a plate crop, not a full video frame.
-                # Only write frames that match the writer's configured size.
-                if (processed_img is not None and
-                        processed_img.shape[1] == frame_width and
-                        processed_img.shape[0] == frame_height):
-                    output_frame = processed_img
-                processed_frames += 1
-                last_frame = current_frame
-
-            out.write(output_frame)
-
-        cap.release()
-        cap = None
-        out.release()
-        out = None
-
-        for path in [temp_path, output_path]:
-            if os.path.exists(path):
-                os.remove(path)
-
-        return jsonify({
-            "success": True,
-            "message": "Video processing completed",
-            "total_frames": total_frames,
-            "processed_frames": processed_frames,
-            "detections": list(best_detections.values()),
-            "processed_video": None,
-        })
-
     except Exception as e:
-        if cap is not None:
-            cap.release()
-        if out is not None:
-            out.release()
-        for path in [temp_path, output_path]:
-            if os.path.exists(path):
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
-        return jsonify({"success": False, "error": f"An error occurred during video processing: {e}"}), 500
+        return jsonify({"success": False, "error": f"Failed to save upload: {e}"}), 500
+
+    job_id = uuid.uuid4().hex
+    with _video_jobs_lock:
+        _video_jobs[job_id] = {"status": "pending", "progress": 0}
+
+    app_obj = current_app._get_current_object()
+    t = _vthread.Thread(
+        target=_run_video_job,
+        args=(job_id, temp_path, plate_detection_model, ocr_model, app_obj),
+        daemon=True,
+        name=f"video-job-{job_id[:8]}",
+    )
+    t.start()
+    return jsonify({"success": True, "job_id": job_id, "message": "Video processing started"})
+
+
+@detection_bp.route("/api/video_job/<string:job_id>")
+@login_required
+def get_video_job(job_id):
+    """Poll endpoint: returns current status/progress for an async video job."""
+    with _video_jobs_lock:
+        job = _video_jobs.get(job_id)
+    if job is None:
+        return jsonify({"success": False, "error": "Job not found"}), 404
+    return jsonify({"success": True, **job})
+
 
 
 # ── Live camera MJPEG stream ─────────────────────────────────────────────────
@@ -503,7 +525,7 @@ def export_detections():
                     utc_to_cairo(r.timestamp),
                     r.plate_number,
                     r.status,
-                    f"{r.confidence:.2f}%" if r.confidence else "N/A",
+                    f"{r.confidence * 100:.2f}%" if r.confidence is not None else "N/A",
                     r.visitor_name or "N/A",
                     processed_by_username,
                 ])
@@ -528,7 +550,7 @@ def export_detections():
                 ws.cell(row=row_idx, column=1, value=utc_to_cairo(r.timestamp))
                 ws.cell(row=row_idx, column=2, value=r.plate_number)
                 ws.cell(row=row_idx, column=3, value=r.status)
-                ws.cell(row=row_idx, column=4, value=f"{r.confidence:.2f}%" if r.confidence else "N/A")
+                ws.cell(row=row_idx, column=4, value=f"{r.confidence * 100:.2f}%" if r.confidence is not None else "N/A")
                 ws.cell(row=row_idx, column=5, value=r.visitor_name or "N/A")
                 ws.cell(row=row_idx, column=6, value=processed_by_username)
             excel_file = io.BytesIO()

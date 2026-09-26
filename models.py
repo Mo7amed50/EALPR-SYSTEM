@@ -61,18 +61,28 @@ class Visitor(Document):
     general_department = StringField()
 
     def save(self, *args, **kwargs):
-        if not self.visitor_code and self.visitor_id:
-            self.visitor_code = f"V{str(self.visitor_id).zfill(3)}"
-
-        # تحويل entry_datetime_utc إلى منطقة زمنية محلية
+        # Convert entry_datetime_utc to local Cairo time
         if self.entry_datetime_utc:
-            utc_time = pytz.utc.localize(self.entry_datetime_utc)
+            utc_time = self.entry_datetime_utc
+            if utc_time.tzinfo is None:
+                utc_time = pytz.utc.localize(utc_time)
             local_time = utc_time.astimezone(EGYPT_TZ)
 
             self.entry_date = local_time.strftime('%Y-%m-%d')
             self.entry_time = local_time.strftime('%H:%M:%S')
 
-        super(Visitor, self).save(*args, **kwargs)
+        # If visitor_code is not assigned, and visitor_id is already assigned
+        if not self.visitor_code and self.visitor_id:
+            self.visitor_code = f"V{str(self.visitor_id).zfill(3)}"
+
+        ret = super(Visitor, self).save(*args, **kwargs)
+
+        # For newly created documents where visitor_id was assigned by SequenceField during save
+        if not self.visitor_code and self.visitor_id:
+            self.visitor_code = f"V{str(self.visitor_id).zfill(3)}"
+            super(Visitor, self).save(*args, **kwargs)
+
+        return ret
     
 
 class UserActivity(Document):

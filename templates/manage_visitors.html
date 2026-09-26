@@ -366,7 +366,7 @@
             button.addEventListener('click', function () {
                 const visitorId = this.getAttribute('data-visitor-id');
 
-                if (!confirm('Are you sure you want to delete this visitor?')) return;
+                if (!window.confirm('Are you sure you want to delete this visitor?')) return;
 
                 fetch(`/api/visitors/${visitorId}`, {
                     method: 'DELETE'

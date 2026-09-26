@@ -40,7 +40,7 @@ def create_app() -> Flask:
     login_manager.login_message = "Please log in to access this page."
     login_manager.login_message_category = "info"
 
-    socketio.init_app(app)
+    socketio.init_app(app, async_mode="threading", cors_allowed_origins="*")
 
     # ── Connect to MongoDB ───────────────────────────────────────────────────
     _connect_mongodb()

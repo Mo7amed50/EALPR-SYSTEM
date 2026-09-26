@@ -4,7 +4,15 @@ ai_models.py — YOLO model loading and shared AI constants.
 Loads plate_detection_model and ocr_model once at startup.
 All blueprints import from here rather than loading their own copies.
 """
+import threading
+import time
+
 from config import MODEL_PATH, OCR_MODEL_PATH
+
+# Serializes YOLO inference across all request/stream threads.
+# Running multiple inference calls concurrently on CPU oversubscribes the
+# torch thread pool and makes the whole app unresponsive ("freezing").
+INFERENCE_LOCK = threading.RLock()
 
 # ── Arabic character class mapping (38 classes) ──────────────────────────────
 CLASS_LABELS_MAPPING = {
@@ -63,6 +71,14 @@ def get_ocr_model():
     if ocr_model is None and not _models_loaded:
         _load_yolo_models()
     return ocr_model
+
+
+def predict_with_lock(model, source, **kwargs):
+    """Run YOLO inference while holding a global lock (thread-safe, non-freezing)."""
+    with INFERENCE_LOCK:
+        if "verbose" not in kwargs:
+            kwargs["verbose"] = False
+        return model.predict(source, **kwargs)
 
 
 def models_loaded():
