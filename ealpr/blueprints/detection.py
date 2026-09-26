@@ -47,6 +47,27 @@ from ealpr.runtime_config import get_video_frame_skip
 detection_bp = Blueprint("detection", __name__)
 
 
+# Phase 2 / Block A — detection images are private, authenticated content.
+#
+# These were previously served as "public, max-age=3600", which allows shared and
+# intermediary caches (corporate proxies, some CDNs) to store and replay plate
+# images for other users. They are now marked "private" so only the browser's own
+# cache may retain them, with Vary on Cookie so a cache cannot serve one
+# authenticated user's image to another. max-age is kept short because a detection
+# record's image content is immutable once written.
+_AUTHENTICATED_IMAGE_CACHE_CONTROL = "private, max-age=300, must-revalidate"
+_IMAGE_CACHE_VARY = "Cookie"
+
+
+def _apply_private_image_cache(response):
+    """Attach private cache headers to an authenticated image response."""
+    response.headers["Cache-Control"] = _AUTHENTICATED_IMAGE_CACHE_CONTROL
+    response.headers["Vary"] = _IMAGE_CACHE_VARY
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+
 # ── Image upload & plate detection ───────────────────────────────────────────
 
 @detection_bp.route("/process_plate", methods=["POST"])
@@ -387,17 +408,114 @@ def detection_history():
 
 # ── Uploaded images gallery ──────────────────────────────────────────────────
 
+# Phase 2 / Block A. The gallery previously rendered every DetectionResult with
+# DetectionResult.objects.order_by("-timestamp").all(), which fetched the whole
+# collection on each page load. Only the requested page is now queried.
+#
+# The collection still mixes two image storage layouts (legacy BinaryField and
+# newer *_image_path). Documents are therefore read with .only() so MongoDB never
+# transfers the binary image payloads just to render a list of cards; the images
+# themselves are still fetched one at a time by /api/images/<id>/<type>.
+GALLERY_ALLOWED_PAGE_SIZES = (20, 50, 100)
+GALLERY_DEFAULT_PAGE_SIZE = 20
+# Fields needed to render a card. Image payloads are deliberately excluded.
+GALLERY_LIST_FIELDS = (
+    "timestamp", "plate_number", "confidence", "status",
+    "visitor_name", "original_image_path", "processed_image_path",
+)
+
+
+def _parse_positive_int(raw, default, allowed=None):
+    """Parse a positive int from a query arg, falling back safely."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value < 1:
+        return default
+    if allowed is not None and value not in allowed:
+        # Snap to the nearest allowed size rather than trusting arbitrary input.
+        return min(allowed, key=lambda size: abs(size - value))
+    return value
+
+
 @detection_bp.route("/uploaded_images")
 @login_required
 @db_required
 def uploaded_images():
     try:
-        detections = DetectionResult.objects.order_by("-timestamp").all()
-        return render_template("uploaded_images.html", detections=detections)
+        requested_page = request.args.get("page")
+        requested_size = request.args.get("per_page")
+
+        per_page = _parse_positive_int(
+            requested_size, GALLERY_DEFAULT_PAGE_SIZE, GALLERY_ALLOWED_PAGE_SIZES
+        )
+
+        query = Q()
+
+        # Preserve the existing search / status / date filter controls, but apply
+        # them in the database so they still work across every page.
+        search_query = (request.args.get("q") or "").strip()
+        if search_query:
+            query &= Q(plate_number__icontains=search_query)
+
+        status_filter = (request.args.get("status") or "all").strip()
+        if status_filter in ("authorized", "unauthorized"):
+            query &= Q(status=status_filter)
+
+        date_filter = (request.args.get("date_filter") or "all").strip()
+        now = datetime.utcnow()
+        if date_filter == "today":
+            query &= Q(timestamp__gte=now.replace(hour=0, minute=0, second=0, microsecond=0))
+        elif date_filter == "week":
+            query &= Q(timestamp__gte=now - timedelta(days=7))
+        elif date_filter == "month":
+            query &= Q(timestamp__gte=now - timedelta(days=30))
+
+        total = DetectionResult.objects(query).count()
+
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = _parse_positive_int(requested_page, 1)
+        if page > total_pages:
+            page = total_pages
+
+        # -timestamp uses the existing timestamp_1 index; -id is a stable
+        # tiebreaker so records sharing a timestamp cannot shift between pages.
+        detections = (
+            DetectionResult.objects(query)
+            .only(*GALLERY_LIST_FIELDS)
+            .order_by("-timestamp", "-id")
+            .skip((page - 1) * per_page)
+            .limit(per_page)
+        )
+
+        return render_template(
+            "uploaded_images.html",
+            detections=detections,
+            page=page,
+            per_page=per_page,
+            total=total,
+            total_pages=total_pages,
+            search_query=search_query,
+            status_filter=status_filter,
+            date_filter=date_filter,
+            allowed_page_sizes=GALLERY_ALLOWED_PAGE_SIZES,
+        )
     except Exception as e:
         print(f"Error retrieving detections: {e}")
         flash("An error occurred while loading images. Please try again.", "error")
-        return render_template("uploaded_images.html", detections=[])
+        return render_template(
+            "uploaded_images.html",
+            detections=[],
+            page=1,
+            per_page=GALLERY_DEFAULT_PAGE_SIZE,
+            total=0,
+            total_pages=1,
+            search_query="",
+            status_filter="all",
+            date_filter="all",
+            allowed_page_sizes=GALLERY_ALLOWED_PAGE_SIZES,
+        )
 
 
 # ── Single detection detail (JSON) ──────────────────────────────────────────
@@ -587,16 +705,14 @@ def serve_detection_image_file(detection_id, img_type):
         file_path = get_image_file_path(target_path)
         if file_path:
             res = send_file(file_path, mimetype="image/jpeg")
-            res.headers["Cache-Control"] = "public, max-age=3600"
-            return res
+            return _apply_private_image_cache(res)
 
         raw_bytes = target_bytes
         if raw_bytes:
             res = Response(raw_bytes, mimetype="image/jpeg")
-            res.headers["Cache-Control"] = "public, max-age=3600"
-            return res
+            return _apply_private_image_cache(res)
 
-        return jsonify({"success": False, "message": "Image content not available"}), 444
+        return jsonify({"success": False, "message": "Image content not available"}), 404
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 

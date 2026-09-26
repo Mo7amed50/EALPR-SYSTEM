@@ -376,7 +376,24 @@
         const statActive = document.getElementById('statActive');
 
         // Stats updater
+        // Phase 2 / Block A: the previous bare setInterval polled every 30s even
+        // when the tab was hidden, and every live_detection event fired another
+        // 4-query round trip immediately. Now: one in-flight request at a time,
+        // no polling while hidden, and bursts collapse into a single request.
+        window.dashboardStatsPending = false;
+        window.dashboardStatsTimer = null;
+        window.dashboardStatsIntervalId = null;
+        const DASHBOARD_STATS_INTERVAL_MS = 30000;
+        const DASHBOARD_STATS_COALESCE_MS = 2000;
+
         window.updateDashboardStats = function () {
+            if (document.hidden) return;
+            if (window.dashboardStatsPending) {
+                window.scheduleDashboardStatsRefresh();
+                return;
+            }
+
+            window.dashboardStatsPending = true;
             $.get('/api/dashboard/stats', function (response) {
                 if (response.success) {
                     statTotal.innerText = response.stats.total_detections;
@@ -384,12 +401,88 @@
                     statUnauth.innerText = response.stats.unauthorized_visitors;
                     statActive.innerText = response.stats.active_visitors;
                 }
+            }).always(function () {
+                window.dashboardStatsPending = false;
             });
         };
 
-        // Auto-update dashboard stats every 30 seconds
-        setInterval(updateDashboardStats, 30000);
+        // Coalesce repeated refresh requests into one delayed request.
+        window.scheduleDashboardStatsRefresh = function () {
+            if (document.hidden) return;
+            if (window.dashboardStatsTimer) return;
+            window.dashboardStatsTimer = setTimeout(function () {
+                window.dashboardStatsTimer = null;
+                window.updateDashboardStats();
+            }, DASHBOARD_STATS_COALESCE_MS);
+        };
+
+        window.startDashboardStatsPolling = function () {
+            if (document.hidden) return;
+            if (window.dashboardStatsIntervalId !== null) return;
+            window.dashboardStatsIntervalId = setInterval(
+                window.updateDashboardStats,
+                DASHBOARD_STATS_INTERVAL_MS
+            );
+        };
+
+        window.stopDashboardStatsPolling = function () {
+            if (window.dashboardStatsIntervalId !== null) {
+                clearInterval(window.dashboardStatsIntervalId);
+                window.dashboardStatsIntervalId = null;
+            }
+            if (window.dashboardStatsTimer) {
+                clearTimeout(window.dashboardStatsTimer);
+                window.dashboardStatsTimer = null;
+            }
+        };
+
+        // Pause while hidden, resume and refresh once on return.
+        document.addEventListener('visibilitychange', function () {
+            if (document.hidden) {
+                window.stopDashboardStatsPolling();
+            } else {
+                window.startDashboardStatsPolling();
+                window.updateDashboardStats();
+            }
+        });
+
+        window.addEventListener('beforeunload', function () {
+            window.stopDashboardStatsPolling();
+        });
+
         updateDashboardStats();
+        startDashboardStatsPolling();
+
+        // Lightweight refresh of the on-screen detection's visitor status after a
+        // visitor is registered. Uses read-only endpoints only: never re-runs
+        // inference, never blocks on the GPU, never writes a DetectionResult.
+        window.refreshDetectionVisitorStatus = function () {
+            // Only meaningful while a detection result is actually displayed.
+            if (imageResultContainer.classList.contains('d-none')) return;
+
+            const plate = (imagePlateNumber.innerText || '').trim();
+            if (!plate) return;
+
+            $.get('/api/search/plate', { q: plate }, function (res) {
+                if (!res || !res.success || !res.data) return;
+
+                const status = res.data.status === 'authorized' ? 'authorized' : 'unauthorized';
+                imageAuthStatus.innerText = status;
+                imageAuthStatus.className = 'badge-status ' + status;
+
+                if (status !== 'authorized') return;
+
+                $.get('/api/visitors/' + encodeURIComponent(res.data.id), function (vres) {
+                    if (!vres || !vres.success) return;
+                    visitorDetailsCard.classList.remove('d-none');
+                    visitorAddQuickAction.classList.add('d-none');
+                    document.getElementById('cardVisitorName').innerText = vres.name || '';
+                    document.getElementById('cardVisitorLicensePlate').innerText = vres.license_plate || '';
+                    document.getElementById('cardVisitorRespDept').innerText = vres.responsible_department || 'غير محدد';
+                    document.getElementById('cardVisitorGenDept').innerText = vres.general_department || 'غير محدد';
+                });
+            });
+        };
 
         // Quick Search Plate Handler
         const quickPlateSearch = document.getElementById('quickPlateSearch');
@@ -528,7 +621,7 @@
                                 if (modal) modal.show();
                             };
                         }
-                        updateDashboardStats();
+                        scheduleDashboardStatsRefresh();
                         updateActivityFeed();
                     } else {
                         showNotification('Detection Failed', res.message || 'Plate could not be recognized', 'unauthorized');
@@ -565,8 +658,11 @@
                         const modal = getOrCreateModal('quickAddVisitorModal');
                         if (modal) modal.hide();
                         quickAddVisitorForm.reset();
-                        // Refetch image recognition state if active to update display status
-                        uploadForm.dispatchEvent(new Event('submit'));
+                        // Refresh the displayed detection's visitor status in place.
+                        // MUST NOT resubmit the upload form: that re-runs YOLO + OCR,
+                        // blocks the UI and writes a duplicate DetectionResult.
+                        refreshDetectionVisitorStatus();
+                        scheduleDashboardStatsRefresh();
                     } else {
                         showNotification('Error', res.message || 'Could not save visitor', 'unauthorized');
                     }
@@ -656,7 +752,7 @@
                                 } else {
                                     videoDetections.innerHTML = '<div class="col-12 text-center text-muted py-2">No plates detected in video.</div>';
                                 }
-                                updateDashboardStats();
+                                scheduleDashboardStatsRefresh();
                             } else if (job.status === 'error') {
                                 clearInterval(pollInterval);
                                 videoLoadingOverlay.classList.add('d-none');
@@ -721,7 +817,9 @@
             if (liveDetections.children.length > 5) {
                 liveDetections.removeChild(liveDetections.lastChild);
             }
-            updateDashboardStats();
+            // Coalesced: a burst of live detections triggers at most one stats
+            // request, and none at all while the tab is hidden.
+            scheduleDashboardStatsRefresh();
         });
 
         // Recent Activity Feed

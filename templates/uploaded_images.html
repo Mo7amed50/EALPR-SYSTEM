@@ -13,7 +13,8 @@
             </div>
             <div class="col-md-4">
                 <div class="search-box">
-                    <input type="text" class="form-control" id="searchInput" placeholder="Search by plate number...">
+                    <input type="text" class="form-control" id="searchInput" placeholder="Search by plate number..."
+                        value="{{ search_query }}" autocomplete="off">
                 </div>
             </div>
         </div>
@@ -24,17 +25,17 @@
         <div class="row">
             <div class="col-md-3">
                 <select class="form-select" id="statusFilter">
-                    <option value="all">All Status</option>
-                    <option value="authorized">Authorized</option>
-                    <option value="unauthorized">Unauthorized</option>
+                    <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All Status</option>
+                    <option value="authorized" {% if status_filter == 'authorized' %}selected{% endif %}>Authorized</option>
+                    <option value="unauthorized" {% if status_filter == 'unauthorized' %}selected{% endif %}>Unauthorized</option>
                 </select>
             </div>
             <div class="col-md-3">
                 <select class="form-select" id="dateFilter">
-                    <option value="all">All Time</option>
-                    <option value="today">Today</option>
-                    <option value="week">This Week</option>
-                    <option value="month">This Month</option>
+                    <option value="all" {% if date_filter == 'all' %}selected{% endif %}>All Time</option>
+                    <option value="today" {% if date_filter == 'today' %}selected{% endif %}>Today</option>
+                    <option value="week" {% if date_filter == 'week' %}selected{% endif %}>This Week</option>
+                    <option value="month" {% if date_filter == 'month' %}selected{% endif %}>This Month</option>
                 </select>
             </div>
             <div class="col-md-2">
@@ -52,6 +53,23 @@
                     <i class="fas fa-download me-2"></i>Export
                 </button>
             </div>
+        </div>
+    </div>
+
+    <!-- Result summary -->
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div class="small text-muted">
+            Showing
+            <strong>{{ (page - 1) * per_page + 1 if total else 0 }}–{{ [page * per_page, total] | min }}</strong>
+            of <strong>{{ total }}</strong> detection{{ 's' if total != 1 else '' }}
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            <label class="small text-muted mb-0" for="perPageSelect">Per page</label>
+            <select class="form-select form-select-sm w-auto" id="perPageSelect" aria-label="Detections per page">
+                {% for size in allowed_page_sizes %}
+                <option value="{{ size }}" {% if size == per_page %}selected{% endif %}>{{ size }}</option>
+                {% endfor %}
+            </select>
         </div>
     </div>
 
@@ -76,7 +94,8 @@
                     <div class="image-container">
                         <img src="{% if detection_image.startswith('/') %}{{ detection_image }}{% else %}data:image/jpeg;base64,{{ detection_image }}{% endif %}"
                             class="img-fluid rounded" alt="Processed Image" data-bs-toggle="modal"
-                            data-bs-target="#imageModal" data-detection-id="{{ detection.id }}">
+                            data-bs-target="#imageModal" data-detection-id="{{ detection.id }}"
+                            loading="lazy" decoding="async">
                     </div>
                     <div class="image-info mt-3">
                         <h6 class="plate-number">{{ detection.plate_number or 'Unknown plate' }}</h6>
@@ -87,8 +106,50 @@
                 </div>
             </div>
         </div>
+        {% else %}
+        <div class="col-12">
+            <div class="alert alert-info mb-0">
+                <i class="fas fa-info-circle me-1"></i>
+                No detections found{% if search_query or status_filter != 'all' or date_filter != 'all' %} for the
+                current filters{% endif %}.
+            </div>
+        </div>
         {% endfor %}
     </div>
+
+    <!-- Pagination controls -->
+    {% if total_pages > 1 %}
+    <nav aria-label="Detections pagination" class="mt-4">
+        <ul class="pagination pagination-sm justify-content-center flex-wrap mb-0">
+            <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+                <a class="page-link"
+                    href="{{ url_for('detection.uploaded_images', page=1, per_page=per_page, q=search_query, status=status_filter, date_filter=date_filter) }}"
+                    aria-label="First page">&laquo; First</a>
+            </li>
+            <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+                <a class="page-link"
+                    href="{{ url_for('detection.uploaded_images', page=page - 1 if page > 1 else 1, per_page=per_page, q=search_query, status=status_filter, date_filter=date_filter) }}"
+                    aria-label="Previous page">Previous</a>
+            </li>
+            {% for p in range([1, page - 2] | max, [total_pages, page + 2] | min + 1) %}
+            <li class="page-item {% if p == page %}active{% endif %}">
+                <a class="page-link"
+                    href="{{ url_for('detection.uploaded_images', page=p, per_page=per_page, q=search_query, status=status_filter, date_filter=date_filter) }}">{{ p }}</a>
+            </li>
+            {% endfor %}
+            <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+                <a class="page-link"
+                    href="{{ url_for('detection.uploaded_images', page=page + 1 if page < total_pages else total_pages, per_page=per_page, q=search_query, status=status_filter, date_filter=date_filter) }}"
+                    aria-label="Next page">Next</a>
+            </li>
+            <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+                <a class="page-link"
+                    href="{{ url_for('detection.uploaded_images', page=total_pages, per_page=per_page, q=search_query, status=status_filter, date_filter=date_filter) }}"
+                    aria-label="Last page">Last &raquo;</a>
+            </li>
+        </ul>
+    </nav>
+    {% endif %}
 </div>
 
 <!-- Image Modal -->
@@ -103,11 +164,11 @@
                 <div class="row">
                     <div class="col-md-6">
                         <h6>Original Image</h6>
-                        <img id="modalOriginalImage" class="img-fluid rounded" alt="Original Image">
+                        <img id="modalOriginalImage" class="img-fluid rounded" alt="Original Image" decoding="async">
                     </div>
                     <div class="col-md-6">
                         <h6>Processed Image</h6>
-                        <img id="modalProcessedImage" class="img-fluid rounded" alt="Processed Image">
+                        <img id="modalProcessedImage" class="img-fluid rounded" alt="Processed Image" decoding="async">
                     </div>
                 </div>
                 <div class="image-details mt-4">
@@ -219,58 +280,37 @@
 
 
     // --- Filtering and Searching ---
-    function applyFilters() {
-        const searchTerm = $('#searchInput').val().toLowerCase();
-        const statusFilter = $('#statusFilter').val();
-        const dateFilter = $('#dateFilter').val();
-
-        $('.image-card').each(function () {
-            const plateNumber = $(this).data('plate').toLowerCase();
-            const status = $(this).data('status');
-            const date = $(this).data('date'); // YYYY-MM-DD format
-
-            let showCard = true;
-
-            // Apply search filter
-            if (searchTerm && !plateNumber.includes(searchTerm)) {
-                showCard = false;
-            }
-
-            // Apply status filter
-            if (statusFilter !== 'all' && status !== statusFilter) {
-                showCard = false;
-            }
-
-            // Apply date filter
-            const today = new Date().toISOString().slice(0, 10);
-            if (dateFilter === 'today' && date !== today) {
-                showCard = false;
-            } else if (dateFilter === 'week') {
-                const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-                if (date < oneWeekAgo) {
-                    showCard = false;
-                }
-            } else if (dateFilter === 'month') {
-                const oneMonthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-                if (date < oneMonthAgo) {
-                    showCard = false;
-                }
-            }
-
-            // Show or hide card
-            if (showCard) {
-                $(this).show();
-            } else {
-                $(this).hide();
-            }
-        });
+    // Phase 2 / Block A: the gallery is now server-paginated, so filtering happens
+    // in the database and applies across every page. Previously these handlers
+    // only shuffled the cards that happened to be in the DOM, which silently
+    // searched a single page once pagination was introduced.
+    function galleryUrl(overrides) {
+        const params = new URLSearchParams();
+        const q = document.getElementById('searchInput').value.trim();
+        if (q) params.set('q', q);
+        const status = document.getElementById('statusFilter').value;
+        if (status && status !== 'all') params.set('status', status);
+        const dateFilter = document.getElementById('dateFilter').value;
+        if (dateFilter && dateFilter !== 'all') params.set('date_filter', dateFilter);
+        params.set('per_page', document.getElementById('perPageSelect').value);
+        // Any filter or page-size change returns to page 1, so a narrowed result
+        // set is never left pointing past its own last page.
+        if (overrides && overrides.per_page) {
+            params.set('per_page', overrides.per_page);
+        }
+        params.set('page', '1');
+        return '/uploaded_images?' + params.toString();
     }
 
-    // Attach event listeners to filters and search input
-    $('#searchInput').on('keyup', applyFilters);
-    $('#statusFilter').on('change', applyFilters);
-    $('#dateFilter').on('change', applyFilters);
-    $('#refreshBtn').on('click', function () { location.reload(); }); // Simple refresh
+    let searchDebounce = null;
+    $('#searchInput').on('input', function () {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(function () { location.href = galleryUrl(); }, 400);
+    });
+    $('#statusFilter').on('change', function () { location.href = galleryUrl(); });
+    $('#dateFilter').on('change', function () { location.href = galleryUrl(); });
+    $('#perPageSelect').on('change', function () { location.href = galleryUrl(); });
+    $('#refreshBtn').on('click', function () { location.href = galleryUrl(); });
 
     // --- Export Button ---
     $('#exportBtn').on('click', function () {
