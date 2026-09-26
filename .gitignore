@@ -1,0 +1,108 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# EALPR V2 — .gitignore
+#
+# Created during Phase 2 / Gate 0.
+#
+# IMPORTANT: this file only affects UNTRACKED files. Several of these paths
+# (notably .env and __pycache__/) are ALREADY tracked from earlier commits and
+# therefore remain tracked. Untracking them is a deliberate, separate decision
+# that has NOT been made here — see PHASE2_BLOCK_A_REPORT.md.
+#
+# Nothing tracked has been removed as part of creating this file.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# NOTE: .env is already tracked (introduced in commit 7d5da32a). Ignoring it
+# here prevents NEW secrets from being added; it does not remove the existing
+# history. The exposed Atlas credential MUST be rotated at the provider.
+.env
+.env.*
+!.env.example
+
+
+# ── Python bytecode / caches ─────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+
+# ── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+
+# ── Local generated storage (runtime image output) ───────────────────────────
+# Written at runtime by ealpr/image_storage.py; images are persisted in
+# MongoDB (path column), these are only working copies.
+detected_plates/
+temp/
+tmp/
+*.log
+
+
+# ── YOLO / training artifacts ────────────────────────────────────────────────
+# Reproducible training inputs — not required to run the application.
+working/egyptian-car-plates-13/
+working/combined_dataset/
+working/combined_dataset.cache
+working/.virtual_documents/
+
+# Ultralytics run bookkeeping and intermediate optimizer checkpoints.
+# best.pt is deliberately NOT ignored: config.py loads these two files at
+# runtime and they are the deployed models.
+working/runs/**/weights/last.pt
+working/runs/**/args.yaml
+working/runs/**/results.csv
+results/
+*.cache
+
+# Export / deployment output
+*.xlsx
+*.pdf
+*.onnx
+*.engine
+*.torchscript
+
+
+# ── Local media scratch ──────────────────────────────────────────────────────
+# Test footage is machine-specific and large; the datasets under working/ are
+# the canonical copy.
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+
+# ── OS / editor noise ────────────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
+Desktop.ini
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+
+# ── Explicitly KEEP (documentation of intent) ────────────────────────────────
+# Application source, spec, and the two runtime model weights must stay
+# versioned. Listed as negations so a broad rule above can never remove them.
+!.env.example
+!working/runs/**/weights/best.pt
+!PROJECT_SPEC_FINAL.md
+!AUDIT_REPORT.md
