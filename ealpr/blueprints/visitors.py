@@ -14,10 +14,10 @@ from datetime import datetime
 
 from flask import Blueprint, render_template, request, jsonify, redirect, url_for, flash
 from flask_login import login_required, current_user
-from mongoengine.queryset.visitor import Q
 
 from ealpr import extensions
 from ealpr.decorators import db_required
+from ealpr.repositories import VisitorRepository
 from models import Visitor
 from ealpr.utils import utc_to_cairo
 
@@ -36,24 +36,22 @@ def check_db_available():
         return redirect(url_for("main.index"))
 
 
-def _find_visitor(visitor_id_str):
-    """Resolve a Visitor by sequence visitor_id (int), MongoDB ObjectId, or visitor_code."""
-    if not visitor_id_str:
-        return None
-    visitor_id_str = str(visitor_id_str).strip()
-    if visitor_id_str.isdigit():
-        v = Visitor.objects(visitor_id=int(visitor_id_str)).first()
-        if v:
-            return v
-    from bson.objectid import ObjectId
-    if ObjectId.is_valid(visitor_id_str):
-        v = Visitor.objects(id=ObjectId(visitor_id_str)).first()
-        if v:
-            return v
-    v = Visitor.objects(visitor_code=visitor_id_str).first()
-    if v:
-        return v
-    return Visitor.objects(license_plate=visitor_id_str).first()
+def _find_visitor(visitor_id_str, for_update=False):
+    """Resolve a Visitor by sequence visitor_id (int), MongoDB ObjectId, or visitor_code.
+
+    Phase 2 / Block C1: resolution moved into VisitorRepository.
+
+    ``for_update=True`` is required by every route that then mutates the
+    document and calls ``save()`` (authorize, unauthorize, update, delete).
+    Those routes need the *complete* visitor: MongoEngine writes back the
+    document as loaded, so a projection here would persist a partial record and
+    silently drop every field that was not fetched. Read-only callers use the
+    projected variant, which resolves the same four tiers but reads only the
+    fields the response needs.
+    """
+    if for_update:
+        return VisitorRepository.find_for_update(visitor_id_str)
+    return VisitorRepository.find_by_identifier(visitor_id_str)
 
 
 # ── Read-only visitor list ───────────────────────────────────────────────────
@@ -62,7 +60,7 @@ def _find_visitor(visitor_id_str):
 @login_required
 @db_required
 def visitors():
-    all_visitors = Visitor.objects.all()
+    all_visitors = VisitorRepository.list_readonly()
     return render_template("visitors.html", visitors=all_visitors)
 
 
@@ -91,7 +89,7 @@ def manage_visitors():
             flash("Visitor ID is required", "error")
             return redirect(url_for("visitors.manage_visitors"))
 
-        visitor = _find_visitor(visitor_id)
+        visitor = _find_visitor(visitor_id, for_update=True)
         if not visitor:
             flash("Visitor not found", "error")
             return redirect(url_for("visitors.manage_visitors"))
@@ -131,14 +129,9 @@ def manage_visitors():
         if target:
             return render_template("manage_visitors.html", visitors=[target], search_query=id_param)
 
-    query = Visitor.objects
-    if search_query:
-        query = query.filter(
-            Q(name__icontains=search_query)
-            | Q(visitor_code__icontains=search_query)
-            | Q(license_plate__icontains=search_query)
-        )
-    all_visitors = query.order_by("-entry_datetime_utc").all()
+    # Phase 2 / Block C1: the filter, ordering and projection now live in
+    # VisitorRepository.search_manage.
+    all_visitors = VisitorRepository.search_manage(search_query)
     return render_template("manage_visitors.html", visitors=all_visitors, search_query=search_query)
 
 
@@ -162,10 +155,7 @@ def add_visitor():
     if status not in {"pending", "authorized", "unauthorized"}:
         return jsonify({"success": False, "message": "Invalid visitor status"}), 400
 
-    duplicate_query = Q(license_plate=license_plate)
-    if visitor_code:
-        duplicate_query = Q(visitor_code=visitor_code) | duplicate_query
-    existing_visitor = Visitor.objects(duplicate_query).first()
+    existing_visitor = VisitorRepository.find_duplicate(license_plate, visitor_code)
     if existing_visitor:
         return jsonify({"success": False, "message": "Visitor with this code or license plate already exists"}), 400
 
@@ -231,7 +221,9 @@ def get_visitor(visitor_id):
 @login_required
 @db_required
 def update_visitor(visitor_id):
-    visitor = _find_visitor(visitor_id)
+    # for_update=True: this route mutates the fields below and then calls
+    # save(), which persists the document exactly as loaded.
+    visitor = _find_visitor(visitor_id, for_update=True)
     if not visitor:
         return jsonify({"success": False, "message": "Visitor not found"}), 404
 
@@ -285,7 +277,9 @@ def update_visitor(visitor_id):
 @login_required
 @db_required
 def delete_visitor(visitor_id):
-    visitor = _find_visitor(visitor_id)
+    # for_update=True for symmetry with the mutating routes: the whole
+    # document is loaded and then removed by its _id.
+    visitor = _find_visitor(visitor_id, for_update=True)
     if not visitor:
         return jsonify({"success": False, "message": "Visitor not found"}), 404
     visitor.delete()

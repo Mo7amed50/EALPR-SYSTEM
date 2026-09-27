@@ -19,15 +19,20 @@ import csv
 import base64
 import uuid
 import mimetypes
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Blueprint, render_template, request, jsonify, Response, flash, send_file, current_app
 from flask_login import login_required, current_user
-from mongoengine import Q
 from bson.objectid import ObjectId, InvalidId
 from werkzeug.utils import secure_filename
 
 from ealpr import extensions
 from ealpr.decorators import db_required
+from ealpr.repositories import DetectionRepository, VisitorRepository
+from ealpr.repositories.detection_repository import (
+    GALLERY_ALLOWED_PAGE_SIZES as REPOSITORY_GALLERY_ALLOWED_PAGE_SIZES,
+    GALLERY_DEFAULT_PAGE_SIZE as REPOSITORY_GALLERY_DEFAULT_PAGE_SIZE,
+    GALLERY_LIST_FIELDS as REPOSITORY_GALLERY_LIST_FIELDS,
+)
 from ealpr.image_storage import save_detection_images, get_image_file_path, read_image_bytes
 from ealpr.image_thumbnails import (
     FALLBACK_MIME,
@@ -397,17 +402,19 @@ def video_feed():
 def detection_history():
     page = max(request.args.get("page", 1, type=int) or 1, 1)
     per_page = 10
-    skip = (page - 1) * per_page
-    total = DetectionResult.objects.count()
-    detections = DetectionResult.objects.order_by("-timestamp")[skip: skip + per_page]
-    total_pages = (total + per_page - 1) // per_page
+
+    # Phase 2 / Block C1. The query was previously unprojected, so each of the
+    # ten rows fetched both BinaryFields (~1.2 MB) to render four text cells.
+    # DetectionRepository.history_page projects the four columns the template
+    # actually reads. Ordering and pagination are unchanged.
+    result = DetectionRepository.history_page(page=page, per_page=per_page)
     return render_template(
         "detection_history.html",
-        detections=detections,
-        page=page,
-        per_page=per_page,
-        total=total,
-        total_pages=total_pages,
+        detections=result.detections,
+        page=result.page,
+        per_page=result.per_page,
+        total=result.total,
+        total_pages=result.total_pages,
         max=max,
         min=min,
     )
@@ -423,13 +430,12 @@ def detection_history():
 # newer *_image_path). Documents are therefore read with .only() so MongoDB never
 # transfers the binary image payloads just to render a list of cards; the images
 # themselves are still fetched one at a time by /api/images/<id>/<type>.
-GALLERY_ALLOWED_PAGE_SIZES = (20, 50, 100)
-GALLERY_DEFAULT_PAGE_SIZE = 20
-# Fields needed to render a card. Image payloads are deliberately excluded.
-GALLERY_LIST_FIELDS = (
-    "timestamp", "plate_number", "confidence", "status",
-    "visitor_name", "original_image_path", "processed_image_path",
-)
+#
+# Phase 2 / Block C1: these now live with the query that uses them, in
+# DetectionRepository, and are re-exported here for backwards compatibility.
+GALLERY_ALLOWED_PAGE_SIZES = REPOSITORY_GALLERY_ALLOWED_PAGE_SIZES
+GALLERY_DEFAULT_PAGE_SIZE = REPOSITORY_GALLERY_DEFAULT_PAGE_SIZE
+GALLERY_LIST_FIELDS = REPOSITORY_GALLERY_LIST_FIELDS
 
 
 def _parse_positive_int(raw, default, allowed=None):
@@ -458,51 +464,30 @@ def uploaded_images():
             requested_size, GALLERY_DEFAULT_PAGE_SIZE, GALLERY_ALLOWED_PAGE_SIZES
         )
 
-        query = Q()
-
-        # Preserve the existing search / status / date filter controls, but apply
-        # them in the database so they still work across every page.
         search_query = (request.args.get("q") or "").strip()
-        if search_query:
-            query &= Q(plate_number__icontains=search_query)
-
         status_filter = (request.args.get("status") or "all").strip()
-        if status_filter in ("authorized", "unauthorized"):
-            query &= Q(status=status_filter)
-
         date_filter = (request.args.get("date_filter") or "all").strip()
-        now = datetime.utcnow()
-        if date_filter == "today":
-            query &= Q(timestamp__gte=now.replace(hour=0, minute=0, second=0, microsecond=0))
-        elif date_filter == "week":
-            query &= Q(timestamp__gte=now - timedelta(days=7))
-        elif date_filter == "month":
-            query &= Q(timestamp__gte=now - timedelta(days=30))
-
-        total = DetectionResult.objects(query).count()
-
-        total_pages = max(1, (total + per_page - 1) // per_page)
         page = _parse_positive_int(requested_page, 1)
-        if page > total_pages:
-            page = total_pages
 
-        # -timestamp uses the existing timestamp_1 index; -id is a stable
-        # tiebreaker so records sharing a timestamp cannot shift between pages.
-        detections = (
-            DetectionResult.objects(query)
-            .only(*GALLERY_LIST_FIELDS)
-            .order_by("-timestamp", "-id")
-            .skip((page - 1) * per_page)
-            .limit(per_page)
+        # Phase 2 / Block C1: the search / status / date filters, the count, the
+        # page clamp and the -timestamp,-id ordering (with its binary-image
+        # projection) now live in one place, DetectionRepository.gallery_page.
+        # The behaviour of this route is unchanged.
+        result = DetectionRepository.gallery_page(
+            page=page,
+            per_page=per_page,
+            search=search_query,
+            status=status_filter,
+            date_filter=date_filter,
         )
 
         return render_template(
             "uploaded_images.html",
-            detections=detections,
-            page=page,
-            per_page=per_page,
-            total=total,
-            total_pages=total_pages,
+            detections=result.detections,
+            page=result.page,
+            per_page=result.per_page,
+            total=result.total,
+            total_pages=result.total_pages,
             search_query=search_query,
             status_filter=status_filter,
             date_filter=date_filter,
@@ -538,15 +523,14 @@ def get_detection(detection_id):
         # Phase 2 / Block B: the response no longer embeds image data, so
         # project away the binary fields instead of transferring ~120 KB of
         # images that would only be discarded.
-        detection = DetectionResult.objects(id=ObjectId(detection_id)).only(
-            "timestamp", "plate_number", "confidence", "status",
-            "visitor_name", "processed_by",
-        ).first()
+        # Phase 2 / Block C1: that projection now lives in
+        # DetectionRepository.get_detail.
+        detection = DetectionRepository.get_detail(detection_id)
         if not detection:
             return jsonify({"success": False, "message": "Detection record not found"}), 404
 
         processed_by_username = detection.processed_by.username if detection.processed_by else None
-        visitor = Visitor.objects(license_plate=detection.plate_number).first() if detection.plate_number else None
+        visitor = VisitorRepository.find_by_plate(detection.plate_number) if detection.plate_number else None
 
         if visitor:
             entry_time_str = (
@@ -635,20 +619,14 @@ def export_detections():
         date_filter = request.args.get("date_filter", "all")
         fmt = request.args.get("format", "csv")
 
-        query = DetectionResult.objects
-        if status_filter != "all":
-            query = query.filter(status=status_filter)
-        if date_filter != "all":
-            now = datetime.utcnow()
-            if date_filter == "today":
-                query = query.filter(timestamp__gte=now.replace(hour=0, minute=0, second=0))
-            elif date_filter == "week":
-                query = query.filter(timestamp__gte=now - timedelta(days=7))
-            elif date_filter == "month":
-                query = query.filter(timestamp__gte=now - timedelta(days=30))
-
-        results = query.order_by("-timestamp")
-        if results.count() == 0:
+        # Phase 2 / Block C1: the filter, ordering and projection moved into
+        # DetectionRepository.list_for_export. This also drops the separate
+        # results.count() round trip, since the repository returns the count
+        # alongside the projected rows. The CSV/Excel output is unchanged.
+        results, total = DetectionRepository.list_for_export(
+            status_filter=status_filter, date_filter=date_filter
+        )
+        if total == 0:
             return jsonify({"error": "No data found for the selected filters"}), 404
 
         if fmt == "csv":
@@ -718,14 +696,10 @@ def serve_detection_image_file(detection_id, img_type):
         # Phase 2 / Block B: project only the two fields this image type needs.
         # A processed crop is ~15 KB, but fetching the whole document also
         # pulled the ~103 KB original out of MongoDB on every gallery request.
-        if img_type == "original":
-            detection = DetectionResult.objects(
-                id=ObjectId(detection_id)
-            ).only("original_image_path", "original_image").first()
-        else:
-            detection = DetectionResult.objects(
-                id=ObjectId(detection_id)
-            ).only("processed_image_path", "processed_image").first()
+        # Phase 2 / Block C1: that choice now lives in
+        # DetectionRepository.get_image_source, the single method in the
+        # repository that is permitted to read a binary field.
+        detection = DetectionRepository.get_image_source(detection_id, img_type)
         if not detection:
             return jsonify({"success": False, "message": "Detection record not found."}), 404
 
@@ -786,15 +760,9 @@ def serve_detection_thumbnail(detection_id, img_type):
             res = Response(cached, mimetype="image/jpeg")
             return _apply_private_image_cache(res)
 
-        # Only fetch the source image when the cache missed.
-        if img_type == "original":
-            detection = DetectionResult.objects(
-                id=ObjectId(detection_id)
-            ).only("original_image_path", "original_image").first()
-        else:
-            detection = DetectionResult.objects(
-                id=ObjectId(detection_id)
-            ).only("processed_image_path", "processed_image").first()
+        # Only fetch the source image when the cache missed. Same projection
+        # rule as the full-image route, now via the repository.
+        detection = DetectionRepository.get_image_source(detection_id, img_type)
         if not detection:
             return jsonify({"success": False, "message": "Detection record not found."}), 404
 
@@ -839,9 +807,9 @@ def get_detection_image(detection_id):
         # Phase 2 / Block B: this endpoint only ever returns URLs and metadata,
         # so the binary image fields are projected away. Previously it pulled
         # ~120 KB per call and threw it away.
-        detection = DetectionResult.objects(id=ObjectId(detection_id)).only(
-            "plate_number", "status", "timestamp", "visitor_name",
-        ).first()
+        # Phase 2 / Block C1: projection now owned by
+        # DetectionRepository.get_image_metadata.
+        detection = DetectionRepository.get_image_metadata(detection_id)
     except InvalidId:
         return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
 
@@ -869,7 +837,10 @@ def get_detection_image(detection_id):
 @db_required
 def get_activities():
     try:
-        activities = DetectionResult.objects.order_by("-timestamp").limit(10)
+        # Phase 2 / Block C1: this feed used to load ten whole detection
+        # documents, both BinaryFields included, to build three short strings
+        # each. DetectionRepository.list_recent reads only those three fields.
+        activities = DetectionRepository.list_recent(limit=10)
         activity_list = [
             {
                 "action": "detect_plate",
@@ -894,7 +865,9 @@ def search_plate():
         return jsonify({"success": False, "message": "Search query required"}), 400
     try:
         # Search visitor database
-        visitor = Visitor.objects(Q(license_plate__icontains=query) | Q(name__icontains=query)).first()
+        # Phase 2 / Block C1: this lookup reads the whole visitor document for
+        # four fields, so it now uses the projected VisitorRepository method.
+        visitor = VisitorRepository.search_plate_or_name(query)
         if visitor:
             return jsonify({
                 "success": True,

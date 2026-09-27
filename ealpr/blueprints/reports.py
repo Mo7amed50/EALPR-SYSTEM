@@ -17,8 +17,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 from ealpr import extensions
 from ealpr.decorators import db_required
-
-from models import Visitor
+from ealpr.repositories import ReportRepository, VisitorRepository
 from ealpr.utils import utc_to_cairo
 
 reports_bp = Blueprint("reports", __name__)
@@ -50,87 +49,46 @@ def reports():
 @db_required
 def get_visitor_stats():
     try:
-        col = Visitor._get_collection()
-        docs = list(col.find({}, {
-            "status": 1,
-            "entry_datetime_utc": 1,
-            "entry_time": 1,
-            "responsible_department": 1,
-        }))
-
-        total_visitors = len(docs)
-        authorized_visitors = sum(1 for d in docs if d.get("status") == "authorized")
-        unauthorized_visitors = sum(1 for d in docs if d.get("status") == "unauthorized")
-        pending_visitors = sum(1 for d in docs if d.get("status") == "pending")
-
-        end_date = datetime.utcnow()
-        month_start = end_date - timedelta(days=30)
-
-        # Last 7 days daily breakdown
-        daily_traffic = []
-        daily_status = []
-        for i in range(7):
-            day = end_date - timedelta(days=i)
-            d_str = day.strftime("%Y-%m-%d")
-            day_visitors = [
-                d for d in docs
-                if d.get("entry_datetime_utc") and d["entry_datetime_utc"].strftime("%Y-%m-%d") == d_str
-            ]
-            auth = sum(1 for d in day_visitors if d.get("status") == "authorized")
-            unauth = sum(1 for d in day_visitors if d.get("status") == "unauthorized")
-            pending = sum(1 for d in day_visitors if d.get("status") == "pending")
-
-            daily_traffic.append({"date": d_str, "day": day.strftime("%a"), "count": len(day_visitors)})
-            daily_status.append({"date": d_str, "authorized": auth, "unauthorized": unauth, "pending": pending})
-
-        daily_traffic.reverse()
-        daily_status.reverse()
-
-        # Peak hours (last 30 days)
-        month_docs = [
-            d for d in docs
-            if d.get("entry_datetime_utc") and d["entry_datetime_utc"] >= month_start
-        ]
-        hour_counts = {}
-        for hour in range(24):
-            hour_prefix = f"{hour:02d}:"
-            h_docs = [
-                d for d in month_docs
-                if (d.get("entry_time") and str(d["entry_time"]).startswith(hour_prefix)) or
-                   (d.get("entry_datetime_utc") and d["entry_datetime_utc"].hour == hour)
-            ]
-            hour_counts[f"{hour:02d}:00"] = {
-                "total": len(h_docs),
-                "authorized": sum(1 for d in h_docs if d.get("status") == "authorized"),
-                "unauthorized": sum(1 for d in h_docs if d.get("status") == "unauthorized"),
-                "pending": sum(1 for d in h_docs if d.get("status") == "pending"),
-            }
-
-        # Department stats
-        dept_stats = {}
-        for d in docs:
-            dept = d.get("responsible_department")
-            if dept:
-                if dept not in dept_stats:
-                    dept_stats[dept] = {"total": 0, "authorized": 0, "unauthorized": 0, "pending": 0}
-                dept_stats[dept]["total"] += 1
-                st = d.get("status")
-                if st in dept_stats[dept]:
-                    dept_stats[dept][st] += 1
+        # Phase 2 / Block C1. This handler used to pull all 1023 visitors into
+        # Python and then walk that list about forty times to build the summary,
+        # the 7-day breakdown, the 24 peak-hour buckets and the department
+        # table. ReportRepository.visitor_stats computes the same figures with
+        # four MongoDB aggregation facets in a single round trip, and the
+        # response body below is byte-for-byte the same.
+        stats = ReportRepository.visitor_stats(datetime.utcnow())
 
         return jsonify({
             "success": True,
             "summary": {
-                "total_visitors": total_visitors,
-                "authorized_visitors": authorized_visitors,
-                "unauthorized_visitors": unauthorized_visitors,
-                "pending_visitors": pending_visitors,
-                "authorization_rate": (authorized_visitors / total_visitors * 100) if total_visitors > 0 else 0,
+                "total_visitors": stats["total_visitors"],
+                "authorized_visitors": stats["authorized_visitors"],
+                "unauthorized_visitors": stats["unauthorized_visitors"],
+                "pending_visitors": stats["pending_visitors"],
+                "authorization_rate": (
+                    stats["authorized_visitors"] / stats["total_visitors"] * 100
+                ) if stats["total_visitors"] > 0 else 0,
             },
-            "daily_traffic": daily_traffic,
-            "daily_status": daily_status,
-            "peak_hours": hour_counts,
-            "department_stats": dept_stats,
+            # The original built these two lists newest-first and then reversed
+            # them, so the endpoint always answered oldest-first.
+            "daily_traffic": [
+                {
+                    "date": row.date,
+                    "day": row.day,
+                    "count": row.total,
+                }
+                for row in reversed(stats["daily_traffic"])
+            ],
+            "daily_status": [
+                {
+                    "date": row.date,
+                    "authorized": row.authorized,
+                    "unauthorized": row.unauthorized,
+                    "pending": row.pending,
+                }
+                for row in reversed(stats["daily_status"])
+            ],
+            "peak_hours": stats["peak_hours"],
+            "department_stats": stats["department_stats"],
         })
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
@@ -145,23 +103,24 @@ def export_analytics_excel():
     try:
         wb = Workbook()
 
-        col = Visitor._get_collection()
-        docs = list(col.find({}, {
-            "status": 1,
-            "entry_datetime_utc": 1,
-            "entry_time": 1,
-            "responsible_department": 1,
-        }))
+        # Phase 2 / Block C1: the four aggregation blocks below (summary, 30-day
+        # daily, 24 peak hours, departments) each used to re-walk the full
+        # unprojected document list in Python. They now come from
+        # ReportRepository.excel_tables, which computes the same tables with
+        # MongoDB aggregations. The emitted cells are unchanged.
+        # One instant drives both the aggregation and the filename, so a
+        # request that straddles midnight cannot disagree with itself.
+        end_date = datetime.utcnow()
+        tables = ReportRepository.excel_tables(end_date)
+        total_visitors = tables.summary["total_visitors"]
+        authorized_visitors = tables.summary["authorized"]
+        unauthorized_visitors = tables.summary["unauthorized"]
+        pending_visitors = tables.summary["pending"]
 
         # Summary sheet
         ws_summary = wb.active
         ws_summary.title = "Summary"
         ws_summary.append(["Metric", "Value"])
-
-        total_visitors = len(docs)
-        authorized_visitors = sum(1 for d in docs if d.get("status") == "authorized")
-        unauthorized_visitors = sum(1 for d in docs if d.get("status") == "unauthorized")
-        pending_visitors = sum(1 for d in docs if d.get("status") == "pending")
 
         for row in [
             ["Total Visitors", total_visitors],
@@ -179,24 +138,14 @@ def export_analytics_excel():
         # Daily traffic sheet (last 30 days)
         ws_daily = wb.create_sheet("Daily Traffic")
         ws_daily.append(["Date", "Day", "Total", "Authorized", "Unauthorized", "Pending"])
-        end_date = datetime.utcnow()
-        for i in range(30):
-            day = end_date - timedelta(days=i)
-            d_str = day.strftime("%Y-%m-%d")
-            day_visitors = [
-                d for d in docs
-                if d.get("entry_datetime_utc") and d["entry_datetime_utc"].strftime("%Y-%m-%d") == d_str
-            ]
-            auth = sum(1 for d in day_visitors if d.get("status") == "authorized")
-            unauth = sum(1 for d in day_visitors if d.get("status") == "unauthorized")
-            pending = sum(1 for d in day_visitors if d.get("status") == "pending")
+        for row in tables.daily:
             ws_daily.append([
-                d_str,
-                day.strftime("%a"),
-                len(day_visitors),
-                auth,
-                unauth,
-                pending,
+                row.date,
+                row.day,
+                row.total,
+                row.authorized,
+                row.unauthorized,
+                row.pending,
             ])
         for cell in ws_daily[1]:
             cell.font = Font(bold=True)
@@ -206,25 +155,13 @@ def export_analytics_excel():
         # Hourly traffic sheet
         ws_hourly = wb.create_sheet("Hourly Traffic")
         ws_hourly.append(["Hour", "Total", "Authorized", "Unauthorized", "Pending"])
-        month_start = end_date - timedelta(days=30)
-        month_docs = [
-            d for d in docs
-            if d.get("entry_datetime_utc") and d["entry_datetime_utc"] >= month_start
-        ]
-        for hour in range(24):
-            hour_str = f"{hour:02d}:00"
-            hour_prefix = f"{hour:02d}:"
-            h_docs = [
-                d for d in month_docs
-                if (d.get("entry_time") and str(d["entry_time"]).startswith(hour_prefix)) or
-                   (d.get("entry_datetime_utc") and d["entry_datetime_utc"].hour == hour)
-            ]
+        for row in tables.hourly.items():
             ws_hourly.append([
-                hour_str,
-                len(h_docs),
-                sum(1 for d in h_docs if d.get("status") == "authorized"),
-                sum(1 for d in h_docs if d.get("status") == "unauthorized"),
-                sum(1 for d in h_docs if d.get("status") == "pending"),
+                row[0],
+                row[1]["total"],
+                row[1]["authorized"],
+                row[1]["unauthorized"],
+                row[1]["pending"],
             ])
         for cell in ws_hourly[1]:
             cell.font = Font(bold=True)
@@ -234,21 +171,10 @@ def export_analytics_excel():
         # Department statistics sheet
         ws_dept = wb.create_sheet("Department Statistics")
         ws_dept.append(["Department", "Total Visitors", "Authorized", "Unauthorized", "Pending", "Authorization Rate"])
-        dept_stats = {}
-        for d in docs:
-            dept = d.get("responsible_department")
-            if dept:
-                if dept not in dept_stats:
-                    dept_stats[dept] = {"total": 0, "authorized": 0, "unauthorized": 0, "pending": 0}
-                dept_stats[dept]["total"] += 1
-                st = d.get("status")
-                if st in dept_stats[dept]:
-                    dept_stats[dept][st] += 1
-
-        for dept, stats in sorted(dept_stats.items(), key=lambda x: x[1]["total"], reverse=True):
-            tot = stats["total"]
-            aut = stats["authorized"]
-            ws_dept.append([dept, tot, aut, stats["unauthorized"], stats["pending"], f"{(aut / tot * 100) if tot > 0 else 0:.1f}%"])
+        for row in tables.departments_sorted_by_total:
+            tot = row["total"]
+            aut = row["authorized"]
+            ws_dept.append([row["department"], tot, aut, row["unauthorized"], row["pending"], f"{(aut / tot * 100) if tot > 0 else 0:.1f}%"])
         for cell in ws_dept[1]:
             cell.font = Font(bold=True)
         for col_name in ["A", "B", "C", "D", "E", "F"]:
@@ -300,10 +226,9 @@ def export_report(type):
             start_date = end_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             title = f"Monthly Visitor Report - {end_date.strftime('%B %Y')}"
 
-        visitors = Visitor.objects(
-            entry_datetime_utc__gte=start_date,
-            entry_datetime_utc__lte=end_date,
-        ).order_by("entry_datetime_utc")
+        # Phase 2 / Block C1: projected to the seven columns this workbook
+        # writes, instead of loading whole visitor documents.
+        visitors = VisitorRepository.list_for_period_report(start_date, end_date)
 
         ws.merge_cells("A1:G1")
         ws["A1"] = title

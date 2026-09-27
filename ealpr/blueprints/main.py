@@ -13,9 +13,28 @@ from flask_login import login_required, current_user
 from datetime import datetime
 
 from ealpr import extensions
-from models import Visitor, DetectionResult, UserActivity
+from ealpr.repositories import DetectionRepository, VisitorRepository
+from models import UserActivity
 
 main_bp = Blueprint("main", __name__)
+
+
+def _dashboard_stats():
+    """The four dashboard KPIs, read through the repositories.
+
+    Phase 2 / Block C1: the three visitor counters were three separate
+    ``count()`` calls (three round trips). They are now a single ``$group``
+    aggregation, so the dashboard costs two queries instead of four. The
+    figures and their semantics are unchanged.
+    """
+    total_detections = DetectionRepository.count_all()
+    counts = VisitorRepository.dashboard_counts()
+    return {
+        "total_detections": total_detections,
+        "authorized_visitors": counts.authorized,
+        "unauthorized_visitors": counts.unauthorized,
+        "active_visitors": counts.active,
+    }
 
 
 @main_bp.before_app_request
@@ -70,16 +89,13 @@ def index():
             unauthorized_visitors=0,
             active_visitors=0,
         )
-    total_detections = DetectionResult.objects.count()
-    authorized_visitors = Visitor.objects(authorized=True).count()
-    unauthorized_visitors = Visitor.objects(authorized=False).count()
-    active_visitors = Visitor.objects(exit_time__in=[None, ""]).count()
+    stats = _dashboard_stats()
     return render_template(
         "index.html",
-        total_detections=total_detections,
-        authorized_visitors=authorized_visitors,
-        unauthorized_visitors=unauthorized_visitors,
-        active_visitors=active_visitors,
+        total_detections=stats["total_detections"],
+        authorized_visitors=stats["authorized_visitors"],
+        unauthorized_visitors=stats["unauthorized_visitors"],
+        active_visitors=stats["active_visitors"],
     )
 
 
@@ -97,19 +113,7 @@ def get_dashboard_stats():
             }
         })
     try:
-        total_detections = DetectionResult.objects.count()
-        authorized_visitors = Visitor.objects(authorized=True).count()
-        unauthorized_visitors = Visitor.objects(authorized=False).count()
-        active_visitors = Visitor.objects(exit_time__in=[None, ""]).count()
-        return jsonify({
-            "success": True,
-            "stats": {
-                "total_detections": total_detections,
-                "authorized_visitors": authorized_visitors,
-                "unauthorized_visitors": unauthorized_visitors,
-                "active_visitors": active_visitors
-            }
-        })
+        return jsonify({"success": True, "stats": _dashboard_stats()})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
