@@ -79,7 +79,7 @@
         {% set detection_status = detection.status or 'unknown' %}
         {% set detection_date = detection.timestamp.strftime('%Y-%m-%d') if detection.timestamp else '' %}
         {% set detection_datetime = detection.timestamp.strftime('%Y-%m-%d %H:%M') if detection.timestamp else 'N/A' %}
-        {% set detection_image = detection|detection_thumb %}
+        {% set detection_image = detection|detection_thumb_url %}
         <div class="col-xl-3 col-lg-4 col-md-6 mb-4 image-card" data-plate="{{ detection.plate_number or '' }}"
             data-status="{{ detection_status }}" data-date="{{ detection_date }}">
             <div class="card h-100">
@@ -92,10 +92,10 @@
                 </div>
                 <div class="card-body">
                     <div class="image-container">
-                        <img src="{% if detection_image.startswith('/') %}{{ detection_image }}{% else %}data:image/jpeg;base64,{{ detection_image }}{% endif %}"
-                            class="img-fluid rounded" alt="Processed Image" data-bs-toggle="modal"
-                            data-bs-target="#imageModal" data-detection-id="{{ detection.id }}"
-                            loading="lazy" decoding="async">
+                        <img src="{{ detection_image }}" class="img-fluid rounded"
+                            alt="Processed Image" data-bs-toggle="modal" data-bs-target="#imageModal"
+                            data-detection-id="{{ detection.id }}" loading="lazy" decoding="async"
+                            onerror="this.onerror=null;this.src='{{ url_for('static', filename='img/image-unavailable.svg') }}';">
                     </div>
                     <div class="image-info mt-3">
                         <h6 class="plate-number">{{ detection.plate_number or 'Unknown plate' }}</h6>
@@ -164,11 +164,13 @@
                 <div class="row">
                     <div class="col-md-6">
                         <h6>Original Image</h6>
-                        <img id="modalOriginalImage" class="img-fluid rounded" alt="Original Image" decoding="async">
+                        <img id="modalOriginalImage" class="img-fluid rounded" alt="Original Image" decoding="async"
+                            onerror="this.onerror=null;this.src='{{ url_for('static', filename='img/image-unavailable.svg') }}';">
                     </div>
                     <div class="col-md-6">
                         <h6>Processed Image</h6>
-                        <img id="modalProcessedImage" class="img-fluid rounded" alt="Processed Image" decoding="async">
+                        <img id="modalProcessedImage" class="img-fluid rounded" alt="Processed Image" decoding="async"
+                            onerror="this.onerror=null;this.src='{{ url_for('static', filename='img/image-unavailable.svg') }}';">
                     </div>
                 </div>
                 <div class="image-details mt-4">

@@ -169,11 +169,13 @@
                 <div class="row">
                     <div class="col-md-6">
                         <h6>Original Image</h6>
-                        <img id="originalImage" class="img-fluid" src="" alt="Original Image" decoding="async">
+                        <img id="originalImage" class="img-fluid" src="" alt="Original Image" decoding="async"
+                            onerror="this.onerror=null;this.src='{{ url_for('static', filename='img/image-unavailable.svg') }}';">
                     </div>
                     <div class="col-md-6">
                         <h6>Processed Image</h6>
-                        <img id="processedImage" class="img-fluid" src="" alt="Processed Image" decoding="async">
+                        <img id="processedImage" class="img-fluid" src="" alt="Processed Image" decoding="async"
+                            onerror="this.onerror=null;this.src='{{ url_for('static', filename='img/image-unavailable.svg') }}';">
                     </div>
                 </div>
                 <div class="mt-3">

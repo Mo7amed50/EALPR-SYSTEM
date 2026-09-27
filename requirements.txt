@@ -1,5 +1,8 @@
 opencv-python>=4.8.0
 numpy>=1.24.0
+# Declared explicitly (Phase 2 / Block B): already present transitively via
+# ultralytics, now imported directly by ealpr/image_thumbnails.py.
+Pillow>=10.0.0
 pytesseract>=0.3.10
 ultralytics>=8.0.0
 flask>=2.3.0

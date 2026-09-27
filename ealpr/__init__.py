@@ -90,9 +90,15 @@ def create_app() -> Flask:
 
     @app.template_filter("detection_thumb_url")
     def detection_thumb_url_filter(detection):
+        """URL of the cached preview thumbnail used by gallery cards.
+
+        Phase 2 / Block B: gallery pages request this small derived image rather
+        than the stored image, so browsing never transfers a full-resolution
+        original. The original remains available through /api/images/<id>/<type>.
+        """
         det_id = getattr(detection, "id", None)
         if det_id:
-            return f"/api/images/{det_id}/processed"
+            return f"/api/images/{det_id}/processed/thumb"
         return ""
 
     @app.template_filter("detection_thumb")

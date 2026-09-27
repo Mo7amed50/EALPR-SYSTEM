@@ -18,9 +18,9 @@ import os
 import csv
 import base64
 import uuid
+import mimetypes
 from datetime import datetime, timedelta
-
-from flask import Blueprint, render_template, request, jsonify, Response, flash, send_file
+from flask import Blueprint, render_template, request, jsonify, Response, flash, send_file, current_app
 from flask_login import login_required, current_user
 from mongoengine import Q
 from bson.objectid import ObjectId, InvalidId
@@ -28,7 +28,14 @@ from werkzeug.utils import secure_filename
 
 from ealpr import extensions
 from ealpr.decorators import db_required
-from ealpr.image_storage import save_detection_images, encode_detection_image, get_image_file_path, read_image_bytes
+from ealpr.image_storage import save_detection_images, get_image_file_path, read_image_bytes
+from ealpr.image_thumbnails import (
+    FALLBACK_MIME,
+    get_or_create_thumbnail,
+    read_cached_thumbnail,
+    sniff_image_mime,
+    thumbnail_cache_path,
+)
 from config import (
     ALLOWED_EXTENSIONS, TEMP_DIR,
     ALLOWED_VIDEO_EXTENSIONS, MAX_VIDEO_SIZE, MAX_IMAGE_SIZE,
@@ -528,7 +535,13 @@ def get_detection(detection_id):
     if not ObjectId.is_valid(detection_id):
         return jsonify({"success": False, "message": "Invalid detection ID format"}), 400
     try:
-        detection = DetectionResult.objects(id=ObjectId(detection_id)).first()
+        # Phase 2 / Block B: the response no longer embeds image data, so
+        # project away the binary fields instead of transferring ~120 KB of
+        # images that would only be discarded.
+        detection = DetectionResult.objects(id=ObjectId(detection_id)).only(
+            "timestamp", "plate_number", "confidence", "status",
+            "visitor_name", "processed_by",
+        ).first()
         if not detection:
             return jsonify({"success": False, "message": "Detection record not found"}), 404
 
@@ -581,8 +594,13 @@ def get_detection(detection_id):
             "processed_by": processed_by_username,
             "original_image_url": f"/api/images/{detection_id}/original",
             "processed_image_url": f"/api/images/{detection_id}/processed",
-            "original_image": encode_detection_image(detection.original_image_path, detection.original_image),
-            "processed_image": encode_detection_image(detection.processed_image_path, detection.processed_image),
+            # Phase 2 / Block B: these two fields used to be base64 copies of the
+            # full images. The modal always preferred *_image_url, so the base64
+            # was downloaded, inflated ~33% by encoding, and then thrown away —
+            # the same images were fetched a second time via the URLs. They are
+            # now empty strings, preserving the field names for older clients.
+            "original_image": "",
+            "processed_image": "",
             "visitor_info": visitor_info,
         })
 
@@ -694,27 +712,121 @@ def export_detections():
 def serve_detection_image_file(detection_id, img_type):
     if not ObjectId.is_valid(detection_id):
         return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
+    if img_type not in ("original", "processed"):
+        return jsonify({"success": False, "message": "Invalid image type."}), 400
     try:
-        detection = DetectionResult.objects(id=ObjectId(detection_id)).first()
+        # Phase 2 / Block B: project only the two fields this image type needs.
+        # A processed crop is ~15 KB, but fetching the whole document also
+        # pulled the ~103 KB original out of MongoDB on every gallery request.
+        if img_type == "original":
+            detection = DetectionResult.objects(
+                id=ObjectId(detection_id)
+            ).only("original_image_path", "original_image").first()
+        else:
+            detection = DetectionResult.objects(
+                id=ObjectId(detection_id)
+            ).only("processed_image_path", "processed_image").first()
         if not detection:
             return jsonify({"success": False, "message": "Detection record not found."}), 404
 
-        target_path = detection.original_image_path if img_type == "original" else detection.processed_image_path
-        target_bytes = detection.original_image if img_type == "original" else detection.processed_image
+        target_path = (
+            detection.original_image_path if img_type == "original"
+            else detection.processed_image_path
+        )
+        target_bytes = (
+            detection.original_image if img_type == "original"
+            else detection.processed_image
+        )
 
         file_path = get_image_file_path(target_path)
         if file_path:
-            res = send_file(file_path, mimetype="image/jpeg")
+            # Derive the type from the file's own bytes, falling back to the
+            # extension only for formats we do not sniff.
+            with open(file_path, "rb") as probe:
+                head = probe.read(16)
+            guessed = sniff_image_mime(head) or \
+                mimetypes.guess_type(file_path)[0] or FALLBACK_MIME
+            res = send_file(file_path, mimetype=guessed, conditional=True)
             return _apply_private_image_cache(res)
 
         raw_bytes = target_bytes
         if raw_bytes:
-            res = Response(raw_bytes, mimetype="image/jpeg")
+            mime = sniff_image_mime(bytes(raw_bytes[:16])) or FALLBACK_MIME
+            res = Response(bytes(raw_bytes), mimetype=mime)
             return _apply_private_image_cache(res)
 
         return jsonify({"success": False, "message": "Image content not available"}), 404
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+    except InvalidId:
+        return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
+    except Exception:
+        # B5: never surface filesystem paths or driver errors to the caller.
+        current_app.logger.exception("Failed to serve detection image %s", detection_id)
+        return jsonify({"success": False, "message": "Image could not be served."}), 500
+
+
+@detection_bp.route("/api/images/<string:detection_id>/<string:img_type>/thumb")
+@login_required
+@db_required
+def serve_detection_thumbnail(detection_id, img_type):
+    """Serve a cached preview thumbnail for a gallery/history card.
+
+    Gallery pages use this instead of the full image, so browsing a page no
+    longer transfers full-resolution originals. The original bytes are never
+    modified: they are only read once to build a derived on-disk cache entry.
+    """
+    if not ObjectId.is_valid(detection_id):
+        return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
+    if img_type not in ("original", "processed"):
+        return jsonify({"success": False, "message": "Invalid image type."}), 400
+    try:
+        cache_path = thumbnail_cache_path(detection_id, img_type)
+
+        cached = read_cached_thumbnail(cache_path)
+        if cached is not None:
+            res = Response(cached, mimetype="image/jpeg")
+            return _apply_private_image_cache(res)
+
+        # Only fetch the source image when the cache missed.
+        if img_type == "original":
+            detection = DetectionResult.objects(
+                id=ObjectId(detection_id)
+            ).only("original_image_path", "original_image").first()
+        else:
+            detection = DetectionResult.objects(
+                id=ObjectId(detection_id)
+            ).only("processed_image_path", "processed_image").first()
+        if not detection:
+            return jsonify({"success": False, "message": "Detection record not found."}), 404
+
+        target_path = (
+            detection.original_image_path if img_type == "original"
+            else detection.processed_image_path
+        )
+        target_bytes = (
+            detection.original_image if img_type == "original"
+            else detection.processed_image
+        )
+
+        source = target_bytes
+        if not source:
+            file_path = get_image_file_path(target_path)
+            source = read_image_bytes(file_path) if file_path else None
+        if not source:
+            return jsonify({"success": False, "message": "Image content not available"}), 404
+
+        thumb = get_or_create_thumbnail(source, detection_id, img_type)
+        if thumb is None:
+            # Corrupt or unsupported image: report it as unavailable rather than
+            # failing the whole gallery. The template shows a placeholder.
+            return jsonify({"success": False, "message": "Preview unavailable"}), 404
+
+        res = Response(thumb, mimetype="image/jpeg")
+        return _apply_private_image_cache(res)
+    except InvalidId:
+        return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
+    except Exception:
+        current_app.logger.exception("Failed to build thumbnail for %s", detection_id)
+        return jsonify({"success": False, "message": "Preview could not be generated."}), 500
 
 
 @detection_bp.route("/api/images/<string:detection_id>")
@@ -724,7 +836,12 @@ def get_detection_image(detection_id):
     if not ObjectId.is_valid(detection_id):
         return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
     try:
-        detection = DetectionResult.objects(id=ObjectId(detection_id)).first()
+        # Phase 2 / Block B: this endpoint only ever returns URLs and metadata,
+        # so the binary image fields are projected away. Previously it pulled
+        # ~120 KB per call and threw it away.
+        detection = DetectionResult.objects(id=ObjectId(detection_id)).only(
+            "plate_number", "status", "timestamp", "visitor_name",
+        ).first()
     except InvalidId:
         return jsonify({"success": False, "message": "Invalid detection ID format."}), 400
 

@@ -38,6 +38,15 @@ ALLOWED_VIDEO_EXTENSIONS = {'mp4', 'avi', 'mov'}  # Supported video formats
 MAX_IMAGE_SIZE = int(os.getenv('MAX_IMAGE_SIZE', '5242880'))  # 5MB
 MAX_VIDEO_SIZE = int(os.getenv('MAX_VIDEO_SIZE', '104857600'))  # 100MB
 
+# Thumbnail settings (Phase 2 / Block B).
+# Thumbnails are a derived, disposable cache written to disk. They are never
+# stored in MongoDB, so no schema change is involved and the original image
+# data is left untouched. Deleting this directory at any time is safe: the next
+# request simply regenerates what it needs.
+THUMBNAIL_DIR = SAVE_DIR / 'thumbnails'
+THUMBNAIL_SIZE = (320, 320)      # bounding box for gallery previews
+THUMBNAIL_QUALITY = int(os.getenv('THUMBNAIL_QUALITY', '80'))
+
 # Video processing settings
 VIDEO_FRAME_SKIP = int(os.getenv('VIDEO_FRAME_SKIP', '5'))  # Process every 5th frame
 VIDEO_DUPLICATE_WINDOW = int(os.getenv('VIDEO_DUPLICATE_WINDOW', '30'))  # Window for duplicate detection
