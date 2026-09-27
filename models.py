@@ -149,3 +149,63 @@ class DetectionResult(Document):
     meta = {
         'indexes': ['plate_number', 'timestamp', 'status']
     }
+
+
+# ── Phase 2 / Block C2 — asynchronous inference jobs ─────────────────────────
+#
+# New, isolated collection. DetectionResult and Visitor are NOT modified: this
+# document only *references* an existing detection once inference succeeds.
+# No migration is required and no existing record is touched.
+#
+# Field reference:
+#   job_id             Stable public identifier returned to the client. UUID4
+#                      hex, unique and indexed. This is the only job identifier
+#                      ever exposed over HTTP (never the Mongo _id).
+#   user               The authenticated user who requested the job. Enforces
+#                      job ownership; the worker writes the same document into
+#                      DetectionResult.processed_by.
+#   status             One of: queued | processing | completed | failed.
+#   image_path         Absolute path to the staged upload on the server. NEVER
+#                      serialised into any API response.
+#   original_filename  Client-supplied filename, sanitised. For display only.
+#   created_at         When the job was accepted by POST /api/inference/jobs.
+#   started_at         When the worker actually began inference.
+#   completed_at       When the job reached a terminal state (either outcome).
+#   detection          The DetectionResult produced on success. Null until then.
+#   plate_text         Recognised plate, for a quick status read without
+#                      loading the full detection document.
+#   error_code         Stable machine-readable failure category for the client.
+#   error_message      Sanitised, human-readable failure text safe to expose.
+#                      Never contains a traceback, path, or driver message.
+#   attempts           Number of worker attempts, for diagnostics.
+#
+# The full exception is written to the server log, never to this document, so a
+# failed job cannot leak internals through the status endpoint.
+class InferenceJob(Document):
+    STATUS_QUEUED = "queued"
+    STATUS_PROCESSING = "processing"
+    STATUS_COMPLETED = "completed"
+    STATUS_FAILED = "failed"
+
+    job_id = StringField(required=True, unique=True)
+    user = ReferenceField(User)
+    status = StringField(
+        required=True,
+        default=STATUS_QUEUED,
+        choices=[STATUS_QUEUED, STATUS_PROCESSING, STATUS_COMPLETED, STATUS_FAILED],
+    )
+    image_path = StringField()
+    original_filename = StringField()
+    created_at = DateTimeField(default=datetime.utcnow, required=True)
+    started_at = DateTimeField()
+    completed_at = DateTimeField()
+    detection = ReferenceField(DetectionResult)
+    plate_text = StringField()
+    error_code = StringField()
+    error_message = StringField()
+    attempts = IntField(default=0)
+
+    meta = {
+        'indexes': ['job_id', 'user', 'status', 'created_at'],
+        'ordering': ['-created_at'],
+    }

@@ -121,6 +121,7 @@ def create_app() -> Flask:
     from ealpr.blueprints.users import users_bp
     from ealpr.blueprints.settings import settings_bp
     from ealpr.blueprints.reports import reports_bp
+    from ealpr.blueprints.inference import inference_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
@@ -129,6 +130,7 @@ def create_app() -> Flask:
     app.register_blueprint(users_bp)
     app.register_blueprint(settings_bp)
     app.register_blueprint(reports_bp)
+    app.register_blueprint(inference_bp)
 
     # ── Bootstrap default admin ──────────────────────────────────────────────
     _create_default_admin()
