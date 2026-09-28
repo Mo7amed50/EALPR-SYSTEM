@@ -9,6 +9,7 @@ from mongoengine import (
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 from datetime import datetime
+import os
 import pytz 
 
 
@@ -181,6 +182,26 @@ class DetectionResult(Document):
 #
 # The full exception is written to the server log, never to this document, so a
 # failed job cannot leak internals through the status endpoint.
+#
+# Phase 2 / Block C3.6 - bounded retention. A TTL index on ``completed_at``
+# expires terminal jobs after JOB_RETENTION_SECONDS. MongoDB's TTL monitor only
+# acts on documents whose indexed field holds a DATE; a document whose
+# ``completed_at`` is null or absent is never expired. Because ``completed_at``
+# is written only by the terminal transitions (_complete / _fail), this enforces
+# "expire completed + failed only" inside the database itself: queued and
+# processing jobs - the two states that must never be expired - carry no
+# ``completed_at`` and are therefore structurally safe. That behaviour was
+# verified empirically against this cluster before being relied on; see
+# PHASE2_BLOCK_C3_REPORT.md.
+#
+# Expiring an InferenceJob does NOT touch its DetectionResult. The job merely
+# holds a ReferenceField to the detection; the detection is an independent
+# document and this collection defines no cascade that could reach it.
+JOB_RETENTION_SECONDS = int(
+    os.getenv('INFERENCE_JOB_RETENTION_SECONDS', 60 * 60 * 24 * 30)
+)
+
+
 class InferenceJob(Document):
     STATUS_QUEUED = "queued"
     STATUS_PROCESSING = "processing"
@@ -206,6 +227,11 @@ class InferenceJob(Document):
     attempts = IntField(default=0)
 
     meta = {
-        'indexes': ['job_id', 'user', 'status', 'created_at'],
+        'indexes': [
+            'job_id', 'user', 'status', 'created_at',
+            # Terminal-state retention. Queued/processing documents have no
+            # completed_at and are never expired by the TTL monitor.
+            {'fields': ['completed_at'], 'expireAfterSeconds': JOB_RETENTION_SECONDS},
+        ],
         'ordering': ['-created_at'],
     }

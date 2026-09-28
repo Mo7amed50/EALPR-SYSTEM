@@ -135,6 +135,18 @@ def create_app() -> Flask:
     # ── Bootstrap default admin ──────────────────────────────────────────────
     _create_default_admin()
 
+    # ── Block C3: recover async inference jobs from a previous process ───────
+    # Jobs are durable in Mongo but the work queue is not, so a restart can
+    # leave jobs queued or processing forever. Recovery re-queues what is still
+    # trustworthy and fails what is not. It is idempotent (one consumer, ever)
+    # and is wrapped so that a recovery problem can never stop the app booting -
+    # C3.10 requires startup to survive Mongo being unavailable.
+    try:
+        from ealpr.inference_jobs import initialize_inference_jobs
+        initialize_inference_jobs(app)
+    except Exception as recovery_err:  # pylint: disable=broad-exception-caught
+        print(f"Warning: inference job recovery could not start: {recovery_err}")
+
     return app
 
 
