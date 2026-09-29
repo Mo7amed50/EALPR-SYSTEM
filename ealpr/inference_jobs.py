@@ -60,6 +60,32 @@ C2 made jobs durable but left three ways for a job to hang forever:
 
 Threshold rationale is documented at QUEUED_STALE_SECONDS / PROCESSING_STALE_
 SECONDS below and derived from the timings measured in C2.
+
+
+Part 3 (C4): worker health monitoring and supervision.
+
+The C4 audit established that the consumer thread is very unlikely to die from an
+uncaught exception, so the real reliability gap is not crashes - it is SILENT
+STRANDING: work that reaches a non-terminal Mongo state with no consumer and no
+mechanism to resolve it, while the process keeps serving traffic and every signal
+reads normal. Two concrete holes were found:
+
+1. A job left ``processing`` less than PROCESSING_STALE_SECONDS before a restart
+   matched neither branch of the stale-processing predicate, so recovery skipped it
+   and it stayed non-terminal until some later restart at least that far away.
+   After a restart there is by definition no consumer that could own such a job, so
+   its age is irrelevant. ``recover_jobs(orphan_processing=True)`` closes this, and
+   it FAILS such a job - it never requeues it, because the DetectionResult insert
+   and the job completion are two separate writes with no transaction between them.
+
+2. Nothing observed worker liveness. ``worker_is_running()`` already existed but had
+   no production caller, so a dead consumer with a backlog was invisible until the
+   next submission. The monitor below gives it one.
+
+The monitor calls ``_ensure_worker`` and NEVER creates a thread itself, so
+"at most one consumer" remains structural rather than conventional. It also never
+treats "no worker" as a fault on its own: the architecture lazy-starts, so
+"no work + no worker" is a valid, healthy state that must not trigger a restart.
 """
 
 import logging
@@ -67,8 +93,10 @@ import os
 import queue
 import re
 import threading
+import time
 import traceback
 import uuid
+from collections import deque
 from datetime import datetime, timedelta
 
 from ealpr import extensions
@@ -147,6 +175,36 @@ _SAFE_MESSAGES = {
 QUEUED_STALE_SECONDS = int(os.getenv("INFERENCE_QUEUED_STALE_SECONDS", 1800))
 PROCESSING_STALE_SECONDS = int(os.getenv("INFERENCE_PROCESSING_STALE_SECONDS", 600))
 
+# ── Block C4: worker supervision ──────────────────────────────────────────────
+#
+# The monitor is deliberately a *supervisor*, not a babysitter. Its single job is
+# to notice the one bad state - work outstanding with no live consumer - and to
+# call the existing _ensure_worker. It never creates a thread itself, so C3's
+# "at most one consumer" invariant is preserved by construction rather than by
+# convention, and it never runs inference itself.
+#
+# The tick is a pure in-memory read (queue depth plus the _queued_ids mirror), so
+# monitoring adds NO MongoDB round-trip. That matters: Atlas latency dominates
+# everything here, and a monitor that queried InferenceJob each tick would add a
+# network call to a subsystem whose measured warm inference is ~2.4s.
+MONITOR_INTERVAL_SECONDS = float(
+    os.getenv("INFERENCE_MONITOR_INTERVAL_SECONDS", 5)
+)
+
+# Restart rate limiting. Without this, a consumer that dies immediately after every
+# start would be restarted forever: unbounded thread creation, unbounded CPU, and
+# each new thread pushing an app_context. C4 caps attempts per window, so a
+# persistent fault degrades to "no consumer" - which the operator can see in the
+# logs - instead of a resource-exhaustion loop.
+#
+# The default of 5 attempts per 5 minutes is generous for the realistic case (one
+# unlucky death) and still bounded for the pathological one. Widening is always
+# safe; narrowing can only cause a real recovery to be suppressed.
+MAX_WORKER_RESTARTS = int(os.getenv("INFERENCE_MAX_WORKER_RESTARTS", 5))
+WORKER_RESTART_WINDOW_SECONDS = float(
+    os.getenv("INFERENCE_WORKER_RESTART_WINDOW_SECONDS", 300)
+)
+
 # Prefix used by blueprints/inference.py when staging an upload. It is
 # deliberately distinct from the "upload_<uuid>_" prefix used by
 # blueprints/detection.py for /process_plate and /process_video, which is what
@@ -192,8 +250,26 @@ _idle.set()
 _queued_ids = set()
 # Block C3.4: one-shot guard so create_app() can call the startup hook without
 # ever producing a second consumer.
+#
+# Block C4.2: this is no longer set unconditionally. It is claimed only once
+# recovery has actually SUCCEEDED, so a MongoDB outage at startup does not
+# permanently disable recovery for the life of the process - the monitor retries
+# until it succeeds. See initialize_inference_jobs.
 _initialization_done = False
 _indexes_ensured = False
+
+# ── Block C4: monitor state ───────────────────────────────────────────────────
+# Kept deliberately small: one event, one thread reference, a sliding window of
+# restart timestamps, and two counters. The monitor is NOT added to _all_workers,
+# because that registry is the single-consumer authority and the monitor is not
+# a consumer - mixing them would make worker_is_running() report on the wrong
+# thread.
+_monitor_stop = threading.Event()
+_monitor_thread = None
+_monitor_lock = threading.Lock()
+_restart_times = deque()
+_restarts_total = 0
+_restart_suppressed = False
 
 
 
@@ -225,11 +301,25 @@ def _ensure_worker(app):
         )
         _all_workers.add(_worker_thread)
         _worker_thread.start()
+        # No image path, no plate text, no exception payload - just the fact that a
+        # consumer now exists, matching C3's logging discipline.
+        log.info("Inference worker started")
         return _worker_thread
 
 
 def _worker_loop(app):
     """Consume jobs one at a time, forever."""
+    try:
+        _worker_loop_body(app)
+    finally:
+        # Reached on clean shutdown (_shutdown set) and on any escape that
+        # terminates the thread. Either way the fact is worth recording, because
+        # "the consumer went away" is the event C4 supervision exists to notice.
+        log.info("Inference worker exited")
+
+
+def _worker_loop_body(app):
+    """The consume loop, split out so _worker_loop can log its exit."""
     while not _shutdown.is_set():
         try:
             job_id = _queue.get(timeout=0.2)
@@ -316,19 +406,206 @@ def wait_for_idle(timeout=60.0):
     return _idle.wait(timeout=timeout)
 
 
+# ── Block C4: worker health fact ──────────────────────────────────────────────
+
+def worker_health():
+    """One snapshot of everything the supervisor needs to decide. Read-only.
+
+    Built entirely from in-memory primitives - the queue, the ``_queued_ids``
+    mirror, and thread liveness - so calling it costs no MongoDB round-trip and
+    can safely run on every monitor tick.
+
+    ``work_outstanding`` is the whole point of this function, and it is
+    deliberately NOT "worker_running". The architecture lazy-starts: an empty
+    queue with no consumer is a valid, healthy state, and treating it as a fault
+    would start a thread that has nothing to do. Supervision must act on
+    *outstanding work*, never on the absence of a thread by itself.
+
+    Read each lock separately and never hold two at once, so this can never
+    deadlock against _ensure_worker or the monitor.
+    """
+    depth = _queue.qsize()
+    with _queue_lock:
+        tracked = len(_queued_ids)
+        recovery_completed = _initialization_done
+    with _monitor_lock:
+        restarts = _restarts_total
+        suppressed = _restart_suppressed
+    monitor = _monitor_thread
+    thread = _worker_thread
+    return {
+        "worker_running": thread is not None and thread.is_alive(),
+        "queue_depth": depth,
+        "outstanding_ids": max(depth, tracked),
+        "work_outstanding": depth > 0 or tracked > 0,
+        "recovery_completed": recovery_completed,
+        "monitor_running": monitor is not None and monitor.is_alive(),
+        "restarts": restarts,
+        "restart_suppressed": suppressed,
+    }
+
+
+# ── Block C4: the monitor ─────────────────────────────────────────────────────
+
+def _consume_restart_budget():
+    """Record and authorise one restart attempt. Returns False when capped.
+
+    Separated from the restart itself because ``_ensure_worker`` takes
+    ``_queue_lock`` and this takes ``_monitor_lock``; keeping the decision and
+    the action in different lock scopes means the monitor can never deadlock
+    against the worker creator, whichever order they are taken in.
+    """
+    now = time.monotonic()
+    global _restart_suppressed, _restarts_total
+    with _monitor_lock:
+        while _restart_times and (now - _restart_times[0]) > WORKER_RESTART_WINDOW_SECONDS:
+            _restart_times.popleft()
+        if len(_restart_times) >= MAX_WORKER_RESTARTS:
+            if not _restart_suppressed:
+                _restart_suppressed = True
+                log.warning(
+                    "Inference worker restart cap reached: %d attempts in %.0fs; "
+                    "further restarts suppressed until the window expires. "
+                    "Outstanding work will wait for a process restart.",
+                    MAX_WORKER_RESTARTS, WORKER_RESTART_WINDOW_SECONDS)
+            return False
+        _restart_suppressed = False
+        _restart_times.append(now)
+        _restarts_total += 1
+        return True
+
+
+def _restart_worker(app, reason):
+    """Restart the consumer by delegating to the one legal creation path."""
+    if not _consume_restart_budget():
+        return False
+    log.info("Inference worker restart requested (%s)", reason)
+    _ensure_worker(app)
+    log.info("Inference worker restart performed (%s); restarts this process=%d",
+             reason, worker_health()["restarts"])
+    return True
+
+
+def _retry_recovery(app):
+    """C4.2 — re-attempt a recovery that previously failed.
+
+    ``initialize_inference_jobs`` only claims its one-shot guard once recovery has
+    actually succeeded, so after a startup MongoDB outage the guard stays unset
+    and this is the path that eventually converges. It stops for good the first
+    time recovery succeeds; if MongoDB is permanently down this is one failed
+    attempt per tick, which is self-limiting rather than a busy loop.
+    """
+    global _initialization_done
+    with _queue_lock:
+        if _initialization_done:
+            return False
+    try:
+        with app.app_context():
+            counts = recover_jobs(orphan_processing=not worker_is_running())
+        if counts.get("errors"):
+            return False
+    except Exception as recovery_err:  # noqa: BLE001 - never kill the monitor
+        log.warning("Inference job recovery retry failed: %s", recovery_err)
+        return False
+    with _queue_lock:
+        _initialization_done = True
+    log.info("Inference job recovery retry succeeded: %s", counts)
+    return True
+
+
+def _monitor_tick(app):
+    """One supervision decision. Small and side-effect-obvious on purpose."""
+    _retry_recovery(app)
+    health = worker_health()
+    # Both conditions matter. "No worker" alone is the lazy-start state and must
+    # be left alone; "work outstanding" alone is being handled fine.
+    if not health["work_outstanding"] or health["worker_running"]:
+        return False
+    return _restart_worker(app, "{} job(s) outstanding with no live consumer"
+                           .format(health["outstanding_ids"]))
+
+
+def _monitor_loop(app):
+    log.info("Inference worker monitor started (interval %.1fs)",
+             MONITOR_INTERVAL_SECONDS)
+    try:
+        while not _monitor_stop.wait(MONITOR_INTERVAL_SECONDS):
+            try:
+                _monitor_tick(app)
+            except Exception:  # noqa: BLE001 - the monitor must outlive any tick
+                log.exception("Inference worker monitor tick failed")
+    finally:
+        log.info("Inference worker monitor exited")
+
+
+def _ensure_monitor(app):
+    """Start the single monitor thread. Idempotent; never the worker's business."""
+    global _monitor_thread
+    with _monitor_lock:
+        if _monitor_thread is not None and _monitor_thread.is_alive():
+            return _monitor_thread
+        _monitor_stop.clear()
+        _monitor_thread = threading.Thread(
+            target=_monitor_loop,
+            args=(app,),
+            daemon=True,
+            name="inference-monitor",
+        )
+        _monitor_thread.start()
+        return _monitor_thread
+
+
+def _stop_monitor(timeout=5.0):
+    """Stop the monitor and reset restart accounting. Test/lifecycle helper.
+
+    Restart bookkeeping is reset here so a later supervision episode is not
+    penalised by a previous one's attempts.
+    """
+    global _monitor_thread, _restarts_total, _restart_suppressed
+    _monitor_stop.set()
+    with _monitor_lock:
+        monitor = _monitor_thread
+    if monitor is not None:
+        monitor.join(timeout=timeout)
+        if monitor.is_alive():
+            log.warning("Inference worker monitor did not stop within %.1fs",
+                        timeout)
+            return False
+    with _monitor_lock:
+        _monitor_thread = None
+        _restart_times.clear()
+        _restarts_total = 0
+        _restart_suppressed = False
+    return True
+
+
+def monitor_is_running():
+    """True when a live monitor thread exists. Diagnostics/tests."""
+    monitor = _monitor_thread
+    return monitor is not None and monitor.is_alive()
+
+
 def shutdown(timeout=5.0):
-    """Stop the worker thread and drop anything still queued. Test-harness helper.
+    """Stop the consumer and the monitor, then drop anything still queued.
+
+    Test-harness and lifecycle helper.
 
     If the join times out the thread is *left registered* rather than forgotten,
     so ``_ensure_worker`` will reuse it instead of starting a second consumer. A
     hard stop is therefore never silently traded against the one-consumer
     invariant.
 
+    The monitor is stopped first. Leaving it running across a consumer shutdown
+    would immediately satisfy its own condition - work outstanding, no consumer -
+    and race the harness by restarting the thread the test just stopped. The
+    restart budget is reset with it, so a later episode starts clean.
+
     C3.4 note: the *initialisation* guard is deliberately not reset here. This
     models stopping a consumer, not a process restart, and re-running recovery
     is what ``initialize_inference_jobs(force=True)`` is for.
     """
     global _worker_thread
+    _stop_monitor(timeout=timeout)
     _shutdown.set()
     _queue.put(None)
     with _queue_lock:
@@ -661,7 +938,7 @@ def _fail_stale(build_query, code, now, counts, label):
     return len(transitioned)
 
 
-def recover_jobs(now=None):
+def recover_jobs(now=None, orphan_processing=False):
     """Reconcile persisted job state with the (empty) in-memory queue.
 
     This models what the process *cannot* know: a restart loses the queue, so
@@ -673,6 +950,8 @@ def recover_jobs(now=None):
     queued, recent      re-queue, then run normally                 valid work
     queued, too old     fail ``stale_queued`` + free its file        untrustworthy
     processing, too old fail ``stale_processing`` + free its file    never retried
+    processing, no live fail ``stale_processing`` + free its file    C4.1
+      consumer (C4.1)
     completed / failed  untouched                                   already terminal
     ==================  ==========================================  ===========
 
@@ -682,6 +961,15 @@ def recover_jobs(now=None):
     create a second detection for one image. Failing is recoverable by the user;
     a silent duplicate is not.
 
+    ``orphan_processing`` is the C4.1 fix for a hole the age rule cannot reach: a
+    job interrupted by a crash and restarted seconds later is not yet "too old",
+    so it was skipped and left non-terminal. It defaults to **False**, so every
+    C3 caller keeps exactly the C3 behaviour; only startup recovery, which knows
+    no consumer can be running, opts in. It is a no-op whenever a live consumer
+    does exist, so it can never fail a job that is genuinely being worked on.
+    New count key: ``orphaned_processing``, reported separately from the
+    age-based ``stale_processing`` so the two causes stay distinguishable.
+
     Never raises: every step is guarded, one unusable job cannot stop the rest,
     and a MongoDB outage degrades to "recovery skipped" rather than a failed
     boot.
@@ -690,6 +978,7 @@ def recover_jobs(now=None):
     counts = {
         "requeued": 0, "skipped_already_queued": 0,
         "stale_queued": 0, "stale_processing": 0, "unrunnable_queued": 0,
+        "orphaned_processing": 0,
         "orphan_artifacts": 0, "errors": 0,
     }
 
@@ -761,7 +1050,31 @@ def recover_jobs(now=None):
         )
         _fail_stale(stale_queued, ERROR_STALE_QUEUED, now, counts, "stale_queued")
 
-        # --- processing: only the clearly-dead ones --------------------------
+        # --- processing: abandoned work first, then age ----------------------
+        # C4.1. The age-based rule below can only see a `processing` job once it
+        # is older than PROCESSING_STALE_SECONDS, which left a real hole: a job
+        # interrupted by a crash and restarted 10 seconds later is *not* stale,
+        # so recovery skipped it, and it stayed non-terminal until some later
+        # restart at least 600s afterwards. A crash-and-immediately-restart is
+        # the single most common deployment event and it lands squarely in that
+        # window.
+        #
+        # The fix is not a smaller threshold - that would be a new, evidence-free
+        # constant. It is to notice the thing that is actually decisive at
+        # startup: with no live consumer there is, by definition, nothing that
+        # could still be running the job, so its age is irrelevant.
+        #
+        # It FAILS the job. It never requeues it. Requeueing is the one action
+        # that could duplicate a DetectionResult, because _persist_detection and
+        # _complete are two separate writes with no transaction between them.
+        if orphan_processing and not worker_is_running():
+            counts["orphaned_processing"] = _fail_stale(
+                lambda: InferenceJob.objects(
+                    status=InferenceJob.STATUS_PROCESSING,
+                ),
+                ERROR_STALE_PROCESSING, now, counts, "orphaned_processing",
+            )
+
         # started_at is set by the atomic claim, so it is the true time work
         # began. created_at is used only as a defensive fallback for a document
         # that somehow reached "processing" without a stamp.
@@ -852,7 +1165,7 @@ def cleanup_orphan_artifacts(older_than_seconds=None):
 
 
 def initialize_inference_jobs(app, force=False):
-    """Block C3.4 idempotent startup hook. Safe to call any number of times.
+    """Block C3.4/C4 startup hook. Safe to call any number of times.
 
     Guarantees, in order:
 
@@ -868,21 +1181,50 @@ def initialize_inference_jobs(app, force=False):
     The consumer is only started when recovery actually produced work, or when
     one is already needed. That preserves C2's lazy-start behaviour instead of
     spawning a thread on every ``create_app()``.
+
+    C4.2 - the guard is now claimed only on SUCCESS. C3 set it *before* running
+    recovery, so a MongoDB outage at startup logged one error and then disabled
+    recovery for the life of the process: jobs persisted before the outage could
+    never be re-queued or failed, silently, until someone restarted the process
+    by hand. Leaving the guard unset on failure lets the monitor retry until
+    MongoDB answers, and retrying is safe because recovery is idempotent.
     """
     global _initialization_done
 
     with _queue_lock:
         if _initialization_done and not force:
             return {"skipped": True}
-        _initialization_done = True
 
     counts = {"skipped": False}
+    recovered = False
     try:
         with app.app_context():
-            counts = recover_jobs()
+            # C4.1: at startup there is no live consumer, so any `processing`
+            # job found here is abandoned regardless of age. Guarded on
+            # worker_is_running() inside recover_jobs, so a forced re-run while
+            # a consumer is live still cannot disturb a real job.
+            counts = recover_jobs(orphan_processing=not worker_is_running())
+        recovered = not counts.get("errors")
     except Exception as init_err:  # noqa: BLE001 - belt and braces
         log.error("Inference job startup initialisation failed: %s", init_err)
         counts = {"error": True}
+
+    if recovered:
+        with _queue_lock:
+            _initialization_done = True
+    else:
+        log.warning(
+            "Inference job recovery did not complete; it will be retried by the "
+            "worker monitor until it succeeds")
+
+    # C4.4: the monitor is started unconditionally, not only when work was
+    # recovered. It is the thing that repairs both holes C4 is here for - a
+    # failed recovery and a consumer that goes missing - so gating it on
+    # counts["requeued"] would disable supervision exactly when it is needed.
+    try:
+        _ensure_monitor(app)
+    except Exception as monitor_err:
+        log.error("Could not start the inference worker monitor: %s", monitor_err)
 
     if counts.get("requeued"):
         try:

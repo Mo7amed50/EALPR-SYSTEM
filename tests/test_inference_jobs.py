@@ -194,6 +194,14 @@ class JobTestCase(unittest.TestCase):
             leaked, [],
             "a consumer thread outlived the test; refusing to run the next test "
             "against a polluted worker")
+        # C4: the supervisor is a background thread too, and it is the more
+        # dangerous of the two - it starts consumers on its own schedule, so one
+        # that outlives its test can pick up the *next* test's queued job while
+        # that test's mocks are half-applied. Assert it stops like the consumer.
+        self.assertFalse(
+            inference_jobs.monitor_is_running(),
+            "the supervision monitor outlived the test; refusing to run the next "
+            "test against an unsupervised worker")
 
     def _cleanup(self):
         self._quiesce_worker()
@@ -209,6 +217,21 @@ class JobTestCase(unittest.TestCase):
         # later test and make an unrelated assertion fail. (This exact leak is
         # what made C3's "recovery must not execute stale work" test flaky.)
         InferenceJob.objects(user__in=[self.owner, self.other]).delete()
+        # C4: the same belt-and-braces for detections. Before C4 a job only ever
+        # finished on the thread the test itself started, so recording the job
+        # id at creation was enough. C4 adds supervision, which can finish a job
+        # on the test's behalf, and a completion landing after the test recorded
+        # its ids leaves a __c2_test_ document behind - permanently skewing the
+        # production count and silently failing the Block A pagination check on
+        # the *next* run, which is how this was found. Deleting strictly by the
+        # harness marker can never touch a real record.
+        coll = DetectionResult._get_collection()
+        leaked_detections = [d["_id"] for d in
+                             coll.find({"plate_number": {"$regex": "^" + MARKER}})]
+        if leaked_detections:
+            print("  [cleanup] removing {} untracked test detection(s) from {}"
+                  .format(len(leaked_detections), coll.name))
+            coll.delete_many({"_id": {"$in": leaked_detections}})
         for user in (self.owner, self.other):
             try:
                 user.delete()
@@ -1657,6 +1680,455 @@ class C2RegressionUnderC3Tests(RecoveryTestCase):
             baseline = _git_show("a829096a:" + relative)
             self.assertEqual(current, baseline,
                              "{} changed; C3 must not modify it".format(relative))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2 / Block C4 — worker supervision and recovery hardening
+# ══════════════════════════════════════════════════════════════════════════════
+
+class WorkerSupervisionTests(RecoveryTestCase):
+    """C4.1 / C4.4 / C4.5 — supervision decisions and the startup stranding hole.
+
+    Note on how "the worker dies" is modelled. CPython cannot kill a running
+    thread, so these tests construct the state a death *leaves behind* rather than
+    pretending to perform one: work outstanding in the in-memory queue with no
+    live consumer. That is the exact post-mortem condition supervision exists to
+    detect, and it is the condition that matters - the supervision decision reads
+    only those two facts, so exercising the state exercises the decision.
+    """
+
+    def _live_consumers(self):
+        return [t for t in threading.enumerate()
+                if t.name == "inference-worker" and t.is_alive()]
+
+    # ── C4.1: the sub-threshold processing hole ──────────────────────────────
+
+    def test_c4_1_recent_processing_job_is_failed_at_startup(self):
+        """The defect the C4 audit found: processing + age < 600s was skipped.
+
+        A crash-and-immediately-restart is the most common deployment event, and
+        it lands inside the 600s window where the C3 age rule cannot see the job.
+        With no live consumer there is nothing that could still be running it, so
+        it must become terminal rather than hang.
+        """
+        job = self.make_staged_job(
+            InferenceJob.STATUS_PROCESSING,
+            created_delta_s=10, started_delta_s=9)
+        self._drain_queue()
+        self.assertEqual(self._live_consumers(), [],
+                         "this test requires no live consumer")
+
+        with mock.patch.object(inference_jobs, "process_license_plate",
+                               side_effect=fake_inference) as inference:
+            counts = inference_jobs.recover_jobs(orphan_processing=True)
+
+        self.assertEqual(counts["orphaned_processing"], 1)
+        reloaded = self.reload(job)
+        self.assertEqual(reloaded.status, InferenceJob.STATUS_FAILED)
+        self.assertEqual(reloaded.error_code,
+                         inference_jobs.ERROR_STALE_PROCESSING)
+        self.assertIsNotNone(reloaded.completed_at,
+                             "a failed job must be stamped terminal")
+        inference.assert_not_called()
+        self.assertFalse(os.path.exists(reloaded.image_path),
+                         "the abandoned staged file must be reclaimed")
+        # The whole point: it must never go back to queued.
+        self.assertNotEqual(reloaded.status, InferenceJob.STATUS_QUEUED)
+
+    def test_c4_1b_startup_path_fails_orphan_without_a_live_consumer(self):
+        """Same guarantee reached through the real startup entry point.
+
+        ``recover_jobs(orphan_processing=True)`` used directly proves the rule;
+        this proves ``initialize_inference_jobs`` actually passes that flag, since
+        a rule nobody switches on would fix nothing.
+        """
+        job = self.make_staged_job(
+            InferenceJob.STATUS_PROCESSING,
+            created_delta_s=10, started_delta_s=9)
+        self._drain_queue()
+        counts = inference_jobs.initialize_inference_jobs(self.app, force=True)
+        reloaded = self.reload(job)
+        self.assertIn("orphaned_processing", counts)
+        self.assertEqual(reloaded.status, InferenceJob.STATUS_FAILED)
+        self.assertEqual(reloaded.error_code,
+                         inference_jobs.ERROR_STALE_PROCESSING)
+
+    def test_c4_1c_orphan_rule_creates_no_detection_result(self):
+        """C4 must not make a duplicate detection worse than C3 did.
+
+        This is the one irreversible side effect in the subsystem, so the
+        orphan path is asserted to create nothing at all.
+        """
+        self.make_staged_job(InferenceJob.STATUS_PROCESSING,
+                             created_delta_s=10, started_delta_s=9)
+        before = DetectionResult.objects.count()
+        self._drain_queue()
+        with mock.patch.object(inference_jobs, "process_license_plate",
+                               side_effect=fake_inference) as inference:
+            inference_jobs.recover_jobs(orphan_processing=True)
+        self.assertEqual(DetectionResult.objects.count(), before)
+        inference.assert_not_called()
+
+    def test_c4_2_recent_processing_job_with_a_live_consumer_is_untouched(self):
+        """The mirror image: a job that really is running must not be failed."""
+        job = self.make_staged_job(
+            InferenceJob.STATUS_PROCESSING,
+            created_delta_s=10, started_delta_s=9)
+        self._drain_queue()
+        inference_jobs._ensure_worker(self.app)
+        self.assertTrue(inference_jobs.worker_is_running())
+
+        counts = inference_jobs.recover_jobs(orphan_processing=True)
+
+        self.assertEqual(counts["orphaned_processing"], 0)
+        reloaded = self.reload(job)
+        self.assertEqual(reloaded.status, InferenceJob.STATUS_PROCESSING)
+        self.assertIsNone(reloaded.error_code)
+        self.assertTrue(os.path.exists(reloaded.image_path),
+                        "a live job's staged file must survive recovery")
+
+    def test_c4_3_c3_stale_threshold_behaviour_is_unchanged_by_default(self):
+        """C4 must not quietly widen the C3 policy for ordinary callers.
+
+        The orphan rule is opt-in, so ``recover_jobs()`` with no argument behaves
+        exactly as C3 did - including leaving a recent processing job alone,
+        which is what test_c3_healthy_processing_job_is_not_disturbed asserts.
+        """
+        job = self.make_staged_job(
+            InferenceJob.STATUS_PROCESSING,
+            created_delta_s=10, started_delta_s=9)
+        counts = inference_jobs.recover_jobs()
+        self.assertEqual(counts["orphaned_processing"], 0)
+        self.assertEqual(self.reload(job).status,
+                         InferenceJob.STATUS_PROCESSING)
+
+    def test_c4_4_orphan_rule_never_requeues_a_processing_job(self):
+        """Structural proof of the absolute C4 rule, independent of the counts.
+
+        Reads the whole ``queued`` population after recovery and asserts that no
+        job id that was ``processing`` before is in it. A future edit that
+        requeued an orphan would pass a count-based test and fail this one.
+        """
+        job = self.make_staged_job(
+            InferenceJob.STATUS_PROCESSING,
+            created_delta_s=10, started_delta_s=9)
+        self._drain_queue()
+        inference_jobs.recover_jobs(orphan_processing=True)
+        self.assertNotIn(job.job_id, inference_jobs.queued_ids())
+        self.assertEqual(self.reload(job).status, InferenceJob.STATUS_FAILED)
+
+    # ── C4.4: the supervision decision ───────────────────────────────────────
+
+    def test_c4_5_monitor_restarts_a_missing_consumer_and_drains_the_backlog(self):
+        """Outstanding work + no consumer -> _ensure_worker -> work completes."""
+        job = self.make_job()          # queued, worker not started
+        self.assertEqual(inference_jobs.queue_depth(), 1)
+        self.assertFalse(inference_jobs.worker_is_running())
+
+        with mock.patch.object(inference_jobs, "process_license_plate",
+                               fake_inference):
+            with mock.patch.object(inference_jobs, "_ensure_worker",
+                                   wraps=inference_jobs._ensure_worker) as ensure:
+                self.assertTrue(inference_jobs._monitor_tick(self.app))
+                ensure.assert_called_once()
+            self.assertTrue(inference_jobs.wait_for_idle(timeout=60))
+
+        self.assertEqual(len(self._live_consumers()), 1,
+                         "supervision must produce exactly one consumer")
+        self.assertTrue(inference_jobs.worker_is_running())
+        self.assertEqual(self.reload(job).status, InferenceJob.STATUS_COMPLETED)
+        self.track(self.reload(job))
+        self.assertIsNotNone(self.reload(job).detection)
+
+    def test_c4_6_empty_queue_with_no_worker_is_never_a_fault(self):
+        """Lazy start is a valid healthy state and must not trigger a restart.
+
+        If this were wrong the application would spawn a consumer thread on every
+        ``create_app()`` for no reason, and the one-consumer invariant would be
+        maintained only by luck.
+        """
+        self.assertEqual(inference_jobs.queue_depth(), 0)
+        self.assertFalse(inference_jobs.worker_is_running())
+        with mock.patch.object(inference_jobs, "_ensure_worker") as ensure:
+            for _ in range(5):
+                self.assertFalse(inference_jobs._monitor_tick(self.app))
+            ensure.assert_not_called()
+        self.assertEqual(self._live_consumers(), [])
+
+    def test_c4_7_live_consumer_with_a_backlog_is_left_alone(self):
+        """Work outstanding is not itself a fault when a consumer is running."""
+        job = self.make_job()
+        inference_jobs._ensure_worker(self.app)
+        self.assertTrue(inference_jobs.worker_is_running())
+        with mock.patch.object(inference_jobs, "process_license_plate",
+                               fake_inference):
+            with mock.patch.object(inference_jobs, "_ensure_worker") as ensure:
+                self.assertFalse(inference_jobs._monitor_tick(self.app))
+                ensure.assert_not_called()
+            self.assertTrue(inference_jobs.wait_for_idle(timeout=60))
+        self.track(self.reload(job))
+
+    def test_c4_8_health_is_pure_in_memory_and_costs_no_mongo_round_trip(self):
+        """The monitor ticks on a timer, so health must never touch MongoDB.
+
+        Atlas latency dominates this subsystem, and a health check that queried
+        the collection would add a network call per tick to a path whose measured
+        warm inference is ~2.4s.
+        """
+        with mock.patch.object(InferenceJob, "objects",
+                               side_effect=AssertionError(
+                                   "worker_health must not query MongoDB")):
+            health = inference_jobs.worker_health()
+        for key in ("worker_running", "queue_depth", "work_outstanding"):
+            self.assertIn(key, health)
+        self.assertFalse(health["work_outstanding"])
+
+    def test_c4_9_health_reports_outstanding_work_before_any_worker_exists(self):
+        self.make_job()
+        health = inference_jobs.worker_health()
+        self.assertTrue(health["work_outstanding"])
+        self.assertFalse(health["worker_running"])
+        self.assertEqual(health["queue_depth"], 1)
+
+    # ── C4.5: restart does not duplicate business effects ────────────────────
+
+    def test_c4_10_restart_does_not_rerun_an_in_flight_processing_job(self):
+        """The duplicate-safety guarantee of a C4 restart.
+
+        A job already ``processing`` has left the in-memory queue, and _claim
+        refuses anything that is not ``queued``. So supervision must leave it
+        exactly where it is, and the detection count must not move.
+        """
+        job = self.make_staged_job(
+            InferenceJob.STATUS_PROCESSING,
+            created_delta_s=10, started_delta_s=9)
+        self._drain_queue()
+        before = DetectionResult.objects.count()
+
+        with mock.patch.object(inference_jobs, "process_license_plate",
+                               side_effect=fake_inference) as inference:
+            for _ in range(3):
+                inference_jobs._monitor_tick(self.app)
+
+        self.assertEqual(DetectionResult.objects.count(), before)
+        inference.assert_not_called()
+        self.assertEqual(self.reload(job).status, InferenceJob.STATUS_PROCESSING,
+                         "supervision must not touch an in-flight job")
+
+    def test_c4_11_a_queued_job_is_rerun_exactly_once_across_a_restart(self):
+        """The mirror case: queued work is re-run, and only once.
+
+        Guards the opposite failure - a restart that quietly dropped real work
+        would look identical to one that ran it twice if only totals were checked.
+        """
+        job = self.make_job()
+        with mock.patch.object(inference_jobs, "process_license_plate",
+                               side_effect=fake_inference) as inference:
+            self.assertTrue(inference_jobs._monitor_tick(self.app))
+            self.assertTrue(inference_jobs.wait_for_idle(timeout=60))
+            inference_jobs._monitor_tick(self.app)
+            self.assertTrue(inference_jobs.wait_for_idle(timeout=60))
+        self.assertEqual(inference.call_count, 1)
+        self.track(self.reload(job))
+        self.assertEqual(self.reload(job).status, InferenceJob.STATUS_COMPLETED)
+        self.assertEqual(DetectionResult.objects(
+            id=self.reload(job).detection.id).count(), 1)
+
+    # ── C4.6: restart rate limiting ──────────────────────────────────────────
+
+    def test_c4_12_repeated_failures_hit_the_restart_cap(self):
+        """A worker that dies instantly must not become a thread-churn loop.
+
+        _ensure_worker is stubbed to start nothing, so every tick sees the same
+        bad state - which is precisely the pathological case the cap exists for.
+        """
+        self.make_job()
+        with mock.patch.object(inference_jobs, "MAX_WORKER_RESTARTS", 3), \
+                mock.patch.object(inference_jobs, "_ensure_worker") as ensure:
+            for _ in range(10):
+                inference_jobs._monitor_tick(self.app)
+        self.assertEqual(ensure.call_count, 3,
+                         "restarts must stop at the cap, not keep churning")
+        self.assertTrue(inference_jobs.worker_health()["restart_suppressed"])
+        self.assertEqual(self._live_consumers(), [])
+
+    def test_c4_13_restart_cap_is_a_sliding_window_not_a_lifetime_total(self):
+        """Old attempts must age out, or the cap would eventually be permanent."""
+        self.make_job()
+        with mock.patch.object(inference_jobs, "MAX_WORKER_RESTARTS", 2), \
+                mock.patch.object(inference_jobs, "WORKER_RESTART_WINDOW_SECONDS",
+                                  0.01), \
+                mock.patch.object(inference_jobs, "_ensure_worker") as ensure:
+            for _ in range(2):
+                inference_jobs._monitor_tick(self.app)
+            self.assertEqual(ensure.call_count, 2)
+            time.sleep(0.05)
+            inference_jobs._monitor_tick(self.app)
+            self.assertEqual(ensure.call_count, 3,
+                             "an expired window must restore the budget")
+
+    def test_c4_14_repeated_restarts_never_accumulate_threads(self):
+        """The real resource risk: each restart must reuse the one-consumer path.
+
+        Restart goes through _ensure_worker, so however many times it fires there
+        is at most one consumer, and the registry purges the dead ones.
+        """
+        jobs = [self.make_job() for _ in range(6)]
+        for _ in range(6):
+            with mock.patch.object(inference_jobs, "process_license_plate",
+                                   fake_inference):
+                inference_jobs._monitor_tick(self.app)
+                inference_jobs.wait_for_idle(timeout=60)
+        self.assertLessEqual(len(self._live_consumers()), 1)
+        with mock.patch.object(inference_jobs, "process_license_plate",
+                               fake_inference):
+            inference_jobs._ensure_worker(self.app)
+            self.assertEqual(len(self._live_consumers()), 1)
+            inference_jobs.wait_for_idle(timeout=60)
+        self.assertLessEqual(len(self._live_consumers()), 1)
+        for job in jobs:
+            self.track(self.reload(job))
+
+    # ── C4.2: recovery retry after a startup Mongo outage ────────────────────
+
+    def test_c4_15_failed_recovery_does_not_permanently_disable_recovery(self):
+        """C3 claimed its one-shot guard BEFORE recovering, so a MongoDB outage at
+        startup disabled recovery for the life of the process. C4 claims it only
+        on success, so the work can still be recovered later.
+        """
+        failing = {"errors": 1, "requeued": 0}
+        # _initialization_done is process-wide and is left claimed by earlier
+        # tests, so start this one from the state a fresh process would have.
+        with mock.patch.object(inference_jobs, "_initialization_done", False):
+            with mock.patch.object(inference_jobs, "recover_jobs",
+                                   return_value=dict(failing)) as recover:
+                counts = inference_jobs.initialize_inference_jobs(self.app,
+                                                                  force=True)
+            self.assertEqual(counts["errors"], 1)
+            self.assertEqual(recover.call_count, 1)
+            self.assertFalse(
+                inference_jobs.worker_health()["recovery_completed"],
+                "a failed recovery must leave the guard unclaimed")
+
+    def test_c4_16_recovery_retries_until_it_succeeds(self):
+        """The retry path converges once MongoDB answers."""
+        with mock.patch.object(inference_jobs, "_initialization_done", False):
+            with mock.patch.object(inference_jobs, "recover_jobs",
+                                   return_value={"errors": 1}) as recover:
+                inference_jobs.initialize_inference_jobs(self.app, force=True)
+                self.assertEqual(recover.call_count, 1)
+                self.assertFalse(
+                    inference_jobs.worker_health()["recovery_completed"])
+
+            with mock.patch.object(inference_jobs, "recover_jobs",
+                                   wraps=inference_jobs.recover_jobs):
+                self.assertTrue(inference_jobs._retry_recovery(self.app))
+            self.assertTrue(inference_jobs.worker_health()["recovery_completed"])
+
+            # And it is now genuinely done: no further attempts.
+            with mock.patch.object(inference_jobs, "recover_jobs",
+                                   wraps=inference_jobs.recover_jobs) as recover:
+                self.assertFalse(inference_jobs._retry_recovery(self.app))
+                recover.assert_not_called()
+
+    def test_c4_17_successful_recovery_still_claims_the_guard(self):
+        """The normal path must not become permanently retryable."""
+        with mock.patch.object(inference_jobs, "recover_jobs",
+                               wraps=inference_jobs.recover_jobs):
+            inference_jobs.initialize_inference_jobs(self.app, force=True)
+        self.assertTrue(inference_jobs.worker_health()["recovery_completed"])
+
+    def test_c4_18_second_initialization_is_still_skipped(self):
+        """C3.4's one-shot guarantee must survive the C4.2 change."""
+        with mock.patch.object(inference_jobs, "recover_jobs",
+                               wraps=inference_jobs.recover_jobs):
+            inference_jobs.initialize_inference_jobs(self.app, force=True)
+            second = inference_jobs.initialize_inference_jobs(self.app)
+        self.assertEqual(second, {"skipped": True})
+
+    # ── C4.7: monitor lifecycle ──────────────────────────────────────────────
+
+    def test_c4_19_monitor_is_a_separate_thread_and_is_idempotent(self):
+        inference_jobs._ensure_monitor(self.app)
+        first = inference_jobs.monitor_is_running()
+        for _ in range(5):
+            inference_jobs._ensure_monitor(self.app)
+        self.assertTrue(first)
+        self.assertTrue(inference_jobs.monitor_is_running())
+        monitors = [t for t in threading.enumerate()
+                    if t.name == "inference-monitor" and t.is_alive()]
+        self.assertEqual(len(monitors), 1)
+
+    def test_c4_20_shutdown_stops_the_monitor(self):
+        """Otherwise the monitor would immediately restart the consumer a test
+        or a shutdown just stopped, racing the caller that stopped it.
+        """
+        inference_jobs._ensure_monitor(self.app)
+        self.assertTrue(inference_jobs.monitor_is_running())
+        inference_jobs.shutdown(timeout=30)
+        self.assertFalse(inference_jobs.monitor_is_running())
+        self.assertFalse(inference_jobs.worker_is_running())
+
+    def test_c4_21_shutdown_resets_the_restart_budget(self):
+        """A later supervision episode must not inherit an old one's penalties."""
+        self.make_job()
+        with mock.patch.object(inference_jobs, "MAX_WORKER_RESTARTS", 1), \
+                mock.patch.object(inference_jobs, "_ensure_worker"):
+            # The first attempt is authorised; the second trips the cap.
+            inference_jobs._monitor_tick(self.app)
+            self.assertFalse(inference_jobs.worker_health()["restart_suppressed"])
+            self.assertEqual(inference_jobs.worker_health()["restarts"], 1)
+            inference_jobs._monitor_tick(self.app)
+            self.assertTrue(
+                inference_jobs.worker_health()["restart_suppressed"])
+        inference_jobs.shutdown(timeout=30)
+        self.assertFalse(inference_jobs.worker_health()["restart_suppressed"])
+        self.assertEqual(inference_jobs.worker_health()["restarts"], 0)
+
+    def test_c4_22_a_failing_tick_does_not_kill_the_monitor(self):
+        """One bad tick must not cost the process its only supervisor."""
+        inference_jobs._ensure_monitor(self.app)
+        with mock.patch.object(inference_jobs, "_monitor_tick",
+                               side_effect=RuntimeError("boom in monitor")):
+            time.sleep(max(inference_jobs.MONITOR_INTERVAL_SECONDS * 2, 0.3))
+        self.assertTrue(inference_jobs.monitor_is_running())
+
+    # ── C4.8: the monitor must not become a second consumer path ─────────────
+
+    def test_c4_23_ensure_worker_remains_the_only_thread_creator(self):
+        """A source-level guarantee, because this is a structural invariant.
+
+        Counting threads after the fact would not catch a second creation path
+        that happened not to fire during the test.
+        """
+        source = _read_text(os.path.join(
+            BASE_DIR, "ealpr", "inference_jobs.py"))
+        creations = [line.strip() for line in source.splitlines()
+                     if "threading.Thread(" in line]
+        self.assertEqual(len(creations), 2,
+                         "expected exactly two thread creations: the consumer "
+                         "in _ensure_worker and the monitor in _ensure_monitor; "
+                         "found {!r}".format(creations))
+        # The consumer must still be created in _ensure_worker and nowhere else.
+        ensure_body = source.split("def _ensure_worker(")[1].split("\ndef ")[0]
+        self.assertIn("threading.Thread(", ensure_body)
+        monitor_body = source.split("def _ensure_monitor(")[1].split("\ndef ")[0]
+        self.assertNotIn("inference-worker", monitor_body,
+                         "the monitor must never name itself as the consumer")
+
+    def test_c4_24_worker_start_and_exit_are_logged(self):
+        """Lifecycle facts must be observable, and must not leak job payloads."""
+        with self.assertLogs("ealpr.inference_jobs", level="INFO") as captured:
+            self.make_job(start_worker=True)
+            self.assertTrue(inference_jobs.wait_for_idle(timeout=60))
+            inference_jobs.shutdown(timeout=30)
+        text = "\n".join(captured.output)
+        self.assertIn("Inference worker started", text)
+        self.assertIn("Inference worker exited", text)
+        self.assertNotIn(MARKER, text,
+                         "health logs must not carry plate text")
+        self.assertNotIn(_temp_dir(), text,
+                         "health logs must not carry image paths")
 
 
 if __name__ == "__main__":
