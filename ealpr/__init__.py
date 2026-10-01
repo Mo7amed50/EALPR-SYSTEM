@@ -15,6 +15,9 @@ from dotenv import load_dotenv
 
 from config import (
     SECRET_KEY, MONGODB_URI, MONGODB_DB_NAME, TEMP_DIR, DEFAULT_ADMIN_PASSWORD,
+    # RuntimeConfigError is re-exported so callers can catch the startup
+    # rejection without importing from the root-level config module.
+    RuntimeConfigError, assert_single_process, resolve_runtime_mode,
 )
 from ealpr.extensions import login_manager, socketio
 
@@ -23,6 +26,20 @@ def create_app() -> Flask:
     """Create, configure, and return the Flask application."""
     load_dotenv()
 
+    # ── Block C5 (S1): resolve the runtime mode before anything else ─────────
+    # This runs before the Flask object exists so that a rejected configuration
+    # fails with a clear message instead of leaving a half-built app behind. It
+    # raises rather than falling back to a default: a request that cannot be
+    # honoured must stop startup, not be silently downgraded.
+    runtime_env, debug = resolve_runtime_mode()
+
+    # ── Block C5 (S3): refuse a multi-process configuration ─────────────────
+    # The inference queue, the one-consumer guarantee, orphaned-job recovery and
+    # the live Socket.IO broadcasts are all process-local, so a second process is
+    # incorrect rather than merely unsupported. Checked here because this is the
+    # one place every entry path (app.py, a WSGI runner, a test) passes through.
+    assert_single_process()
+
     app = Flask(
         __name__,
         # Resolve templates relative to the project root (one level up from ealpr/)
@@ -30,6 +47,19 @@ def create_app() -> Flask:
         static_folder=os.path.join(os.path.dirname(__file__), "..", "static"),
     )
     app.config["SECRET_KEY"] = SECRET_KEY
+
+    # C5.1/S1: `debug` is now the validated environment switch, not a literal in
+    # the entry point. It is false everywhere except an explicitly development
+    # run that asked for it, which is what removes the accidental-debugger risk.
+    app.debug = debug
+    # Recorded so a running process can report which mode it booted in, and so
+    # `test` is distinguishable from `development` without re-reading os.environ.
+    app.config["EALPR_ENV"] = runtime_env
+    # Read by app.py so the entry point passes the validated value to the server
+    # instead of deciding debug itself.
+    app.config["EALPR_DEBUG"] = debug
+    if runtime_env == "test":
+        app.config["TESTING"] = True
 
     # ── Create temp directory ────────────────────────────────────────────────
     os.makedirs(TEMP_DIR, exist_ok=True)
@@ -141,8 +171,13 @@ def create_app() -> Flask:
     # trustworthy and fails what is not. It is idempotent (one consumer, ever)
     # and is wrapped so that a recovery problem can never stop the app booting -
     # C3.10 requires startup to survive Mongo being unavailable.
+    #
+    # C5.4 registers the interpreter-exit hook alongside it. The hook itself is
+    # idempotent, so a second create_app() in the same process (a test, a second
+    # factory call) cannot stack registrations.
     try:
-        from ealpr.inference_jobs import initialize_inference_jobs
+        from ealpr.inference_jobs import initialize_inference_jobs, register_atexit_shutdown
+        register_atexit_shutdown()
         initialize_inference_jobs(app)
     except Exception as recovery_err:  # pylint: disable=broad-exception-caught
         print(f"Warning: inference job recovery could not start: {recovery_err}")

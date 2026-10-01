@@ -69,3 +69,115 @@ CAMERA_URL = os.getenv('CAMERA_URL', '0')  # 0 for default camera
 FPS_LIMIT = int(os.getenv('FPS_LIMIT', '30'))  # FPS limit for camera feed
 FRAME_WIDTH = int(os.getenv('FRAME_WIDTH', '640'))  # Camera frame width
 FRAME_HEIGHT = int(os.getenv('FRAME_HEIGHT', '480'))  # Camera frame height 
+
+# ── Phase 2 / Block C5 (S1 + S3): runtime mode ────────────────────────────────
+# Before C5 the entry point hard-coded `debug=True`, so the interactive debugger
+# was enabled on every run regardless of intent. C5 replaces that literal with an
+# explicit, validated switch and records the single-process constraint that the
+# C2/C3/C4 worker design depends on.
+#
+# `EALPR_ENV`  development | production | test   (default: development)
+# `EALPR_DEBUG` on | off                          (default: off)
+#
+# An unrecognised value is a configuration error, not something to guess at: this
+# module raises RuntimeConfigError rather than falling back to a default, because
+# silently running production with development settings is exactly the failure
+# this switch exists to prevent.
+
+VALID_ENVIRONMENTS = ('development', 'production', 'test')
+
+_TRUTHY = {'1', 'true', 'yes', 'on'}
+_FALSY = {'0', 'false', 'no', 'off', ''}
+
+
+class RuntimeConfigError(RuntimeError):
+    """Raised when the requested runtime mode cannot be served safely."""
+
+
+def _env_flag(name, default='0'):
+    """Parse a boolean environment variable, rejecting anything ambiguous."""
+    raw = os.getenv(name)
+    if raw is None:
+        raw = default
+    value = str(raw).strip().lower()
+    if value in _TRUTHY:
+        return True
+    if value in _FALSY:
+        return False
+    raise RuntimeConfigError(
+        "{}={!r} is not a boolean. Use one of: {}.".format(
+            name, raw, ', '.join(sorted(_TRUTHY | {'off'})))
+    )
+
+
+def resolve_runtime_mode():
+    """Resolve ``(environment, debug)`` from the environment.
+
+    Returns a tuple so callers cannot mutate shared state, and so the values can
+    be compared directly in tests without reaching into module globals.
+
+    Production refuses ``EALPR_DEBUG=on`` instead of quietly disabling it: a
+    request that cannot be honoured must stop the process, not be downgraded into
+    a different configuration than the operator asked for.
+    """
+    env_name = (os.getenv('EALPR_ENV') or 'development').strip().lower()
+    if env_name not in VALID_ENVIRONMENTS:
+        raise RuntimeConfigError(
+            "EALPR_ENV={!r} is not valid. Choose one of: {}.".format(
+                env_name, ', '.join(VALID_ENVIRONMENTS))
+        )
+
+    debug = _env_flag('EALPR_DEBUG')
+
+    # The interactive debugger is available in development and nowhere else. In
+    # production it is a remote code execution path; in `test` it intercepts the
+    # exceptions the suite needs to see, which turns a failure into a hang. One
+    # rule for both, rather than two cases that could drift apart.
+    if debug and env_name != 'development':
+        raise RuntimeConfigError(
+            "EALPR_DEBUG=on requires EALPR_ENV=development, not "
+            "EALPR_ENV={}. The interactive debugger exposes a remote code "
+            "execution path in production and swallows the exceptions a test "
+            "run needs to report.".format(env_name)
+        )
+
+    return env_name, debug
+
+
+def assert_single_process(app_name='EALPR'):
+    """Refuse a configuration that would run more than one process.
+
+    The C2/C3/C4 inference design is process-local by construction: the queue, the
+    single-consumer guarantee and the orphaned-job recovery rule all assume one
+    process, and ``socketio`` runs with ``async_mode="threading"`` and no message
+    queue. A second process would silently violate all three - the live Socket.IO
+    broadcasts in particular would reach only the clients attached to the process
+    that emitted them.
+
+    Rather than documenting a rule that nothing enforces, the two settings that
+    actually create extra processes are rejected outright. The Werkzeug reloader
+    is the dangerous one: it is a single keyword argument away from being enabled,
+    and it is invisible once it is.
+    """
+    if _env_flag('EALPR_RELOADER'):
+        raise RuntimeConfigError(
+            "{}: the reloader starts a second process, which this app cannot "
+            "support. Its inference queue, single-consumer guarantee and live "
+            "Socket.IO broadcasts are process-local. Run with one process "
+            "(EALPR_RELOADER=off).".format(app_name)
+        )
+
+    workers_raw = os.getenv('EALPR_WORKERS')
+    if workers_raw is not None:
+        try:
+            workers = int(str(workers_raw).strip())
+        except ValueError:
+            raise RuntimeConfigError(
+                "{}: EALPR_WORKERS={!r} is not an integer.".format(app_name, workers_raw)
+            )
+        if workers != 1:
+            raise RuntimeConfigError(
+                "{}: EALPR_WORKERS={} is not supported. This app runs in a single "
+                "process; see the Phase 2 C5 report for why a second process is "
+                "incorrect rather than merely unsupported.".format(app_name, workers)
+            ) 

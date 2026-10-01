@@ -88,6 +88,7 @@ treats "no worker" as a fault on its own: the architecture lazy-starts, so
 "no work + no worker" is a valid, healthy state that must not trigger a restart.
 """
 
+import atexit
 import logging
 import os
 import queue
@@ -623,6 +624,53 @@ def shutdown(timeout=5.0):
     drain_queue()
     return True
 
+
+
+# ── Block C5 (S4): interpreter-exit shutdown ─────────────────────────────────
+# C5.4: `shutdown()` already existed and was already correct, but nothing in the
+# application ever called it - only tests did. A normal interpreter exit therefore
+# left the consumer thread and the monitor to be killed by the runtime, which drops
+# an in-memory job silently: the MongoDB row stays `processing` and only the C3/C4
+# recovery pass on the *next* start notices. Wiring the existing function to
+# atexit is the whole fix; there is no new shutdown logic here.
+#
+# The hook is idempotent in both directions, deliberately:
+#   * repeated registration is a no-op, so a second create_app() cannot stack
+#     hooks (shutdown() itself is also safe to call twice);
+#   * the callback catches everything, because atexit runs during interpreter
+#     teardown when logging and threading are already partially torn down, and a
+#     raise there would mask the process's real exit status for no benefit.
+_atexit_registered = False
+
+
+def register_atexit_shutdown():
+    """Register `shutdown()` to run once at interpreter exit. Idempotent.
+
+    Returns True when this call performed the registration, False when the hook
+    was already in place, so the behaviour is observable in tests.
+    """
+    global _atexit_registered
+    if _atexit_registered:
+        return False
+    atexit.register(_atexit_shutdown)
+    _atexit_registered = True
+    return True
+
+
+def _atexit_shutdown():
+    """The registered callback: stop the worker without ever raising."""
+    try:
+        shutdown()
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        # Never propagate. This runs at interpreter exit, where an exception
+        # would be reported as an unrelated shutdown failure and could mask the
+        # process's real exit status.
+        log.warning("Inference shutdown at exit did not complete cleanly: %s", exc)
+
+
+def atexit_shutdown_registered():
+    """True when the interpreter-exit hook is in place. Diagnostics/tests."""
+    return _atexit_registered
 
 
 # ── The job lifecycle ────────────────────────────────────────────────────────
