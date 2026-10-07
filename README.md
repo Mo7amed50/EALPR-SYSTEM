@@ -51,6 +51,48 @@ python app.py
 Access the application at http://localhost:5000.
 
 
+Runtime Modes and Production Readiness (Phase 2, Block C5)
+
+Startup command: python app.py
+
+The application runs in one of three runtime modes, selected by EALPR_ENV. The mode is resolved first thing in create_app(), before any Flask object or database connection exists, so a rejected configuration stops startup with a clear error instead of becoming a running service with a bad setting.
+
+development (default)
+Permissive local mode. A fresh checkout with no .env boots here. The built-in development fallback for SECRET_KEY and the default admin password are accepted, and EALPR_DEBUG is honoured.
+
+production
+Strict mode. Startup refuses to continue unless SECRET_KEY is set to a unique random value (the placeholder your-super-secret-key-change-this and the fallback ealpr-dev-secret are both rejected) and DEFAULT_ADMIN_PASSWORD is set to something other than the known default admin123. Debug must be off, and the process count must be one. The failing variable is named in the error message; its value is never echoed into the message, the logs, or crash output.
+
+test
+Deterministic mode used by the test suite. Refuses the debug flag and needs no real secrets, so the suite runs on a clean checkout without configuring credentials.
+
+Runtime variables
+
+EALPR_ENV = development | production | test
+    Selects the mode above. Default: development. An unrecognised value is an error.
+
+EALPR_DEBUG = true | false
+    Debug/interactive debugger. Default: false. Only honoured when EALPR_ENV=development; any other mode raises RuntimeConfigError at startup. Never enable it in production.
+
+EALPR_RELOADER = true | false
+    Werkzeug auto-reloader. Default: false. Must stay false, because the app is single process and the reloader's parent/child pair would run two independent instances.
+
+EALPR_WORKERS = 1
+    Must be exactly 1. Default: 1.
+
+Single-process requirement
+
+This application is single process, and that is a correctness requirement rather than a deployment preference. The inference job queue guarantees exactly one consumer, orphaned-job recovery assumes one owner, and live Socket.IO broadcasts rely on the in-process connection registry. Two workers, two containers, or a reloader parent/child pair would each break those guarantees. The only supported startup command is python app.py, with EALPR_WORKERS=1 and EALPR_RELOADER=false.
+
+Socket.IO runs threaded within that single process (the flask-socketio extension with threading async mode), which is why adding processes would require an external message queue that the application does not have.
+
+Deployment status
+
+S2, the production WSGI server selection, is not yet implemented. No production WSGI server is installed or configured. Combined with the single-process requirement above, this application is not production-ready, and this documentation does not claim otherwise. Block C5 delivered runtime mode validation (S1), single-process enforcement (S3), shutdown lifecycle handling (S4), production secret validation (S5), startup logging discipline (S6) and this documentation (S7). Choosing, installing and configuring a production WSGI server remains open work.
+
+All values shown in .env.example are placeholders. Do not commit real credentials.
+
+
 Usage
 
 Live Camera Feed: Start the camera to monitor real-time license plate detections.

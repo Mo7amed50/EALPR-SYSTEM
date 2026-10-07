@@ -1,8 +1,16 @@
+import logging
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Phase 2 / Block C5 (S6). This module is imported before any Flask object
+# exists, so it cannot use `app.logger`. Its own logger is enough: a record at
+# WARNING or above is emitted even with no handler configured (the stdlib
+# fallback handler), which keeps the two model-path warnings below visible
+# without configuring logging globally.
+log = logging.getLogger(__name__)
 
 # Base directory
 BASE_DIR = Path(__file__).resolve().parent
@@ -14,9 +22,9 @@ OCR_MODEL_PATH = Path(os.getenv('OCR_MODEL_PATH', BASE_DIR / 'working' / 'runs' 
 MODEL_AVAILABLE = MODEL_PATH.exists()
 OCR_MODEL_AVAILABLE = OCR_MODEL_PATH.exists()
 if not MODEL_AVAILABLE:
-    print(f"Warning: plate detection model file not found at {MODEL_PATH}")
+    log.warning("plate detection model file not found at %s", MODEL_PATH)
 if not OCR_MODEL_AVAILABLE:
-    print(f"Warning: OCR model file not found at {OCR_MODEL_PATH}")
+    log.warning("OCR model file not found at %s", OCR_MODEL_PATH)
 
 # Detection settings
 CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.5'))
@@ -56,8 +64,21 @@ MONGODB_URI = os.getenv('MONGODB_URI', '').strip()
 MONGODB_DB_NAME = os.getenv('MONGODB_DB_NAME', 'ealpr_db')
 
 # Flask Configuration
-SECRET_KEY = os.getenv('SECRET_KEY', 'ealpr-dev-secret')
-DEFAULT_ADMIN_PASSWORD = os.getenv('DEFAULT_ADMIN_PASSWORD', 'admin123')
+#
+# The two fallbacks below exist so a fresh development checkout runs with no
+# .env at all. They are named, not inlined, so that S5 can recognise them: a
+# production run must never be served by either value.
+DEVELOPMENT_SECRET_FALLBACK = 'ealpr-dev-secret'
+KNOWN_DEFAULT_ADMIN_PASSWORD = 'admin123'
+#: Values that identify an untouched template rather than a real credential.
+#: Refused in production by `assert_production_secrets`.
+PLACEHOLDER_SECRET_KEYS = frozenset({
+    DEVELOPMENT_SECRET_FALLBACK,
+    'your-super-secret-key-change-this',   # the value shipped in .env.example
+})
+
+SECRET_KEY = os.getenv('SECRET_KEY', DEVELOPMENT_SECRET_FALLBACK)
+DEFAULT_ADMIN_PASSWORD = os.getenv('DEFAULT_ADMIN_PASSWORD', KNOWN_DEFAULT_ADMIN_PASSWORD)
 OFFLINE_ADMIN_PASSWORD = os.getenv('OFFLINE_ADMIN_PASSWORD', DEFAULT_ADMIN_PASSWORD)
 
 # Font Path
@@ -180,4 +201,66 @@ def assert_single_process(app_name='EALPR'):
                 "{}: EALPR_WORKERS={} is not supported. This app runs in a single "
                 "process; see the Phase 2 C5 report for why a second process is "
                 "incorrect rather than merely unsupported.".format(app_name, workers)
-            ) 
+            )
+
+
+def assert_production_secrets(env_name, secret_key=None, admin_password=None):
+    """Refuse to start in production on a missing or placeholder credential.
+
+    Block C5 (S5). Both values have development fallbacks so that a fresh clone
+    runs with no ``.env`` at all - useful locally, catastrophic in production,
+    where a shared Flask ``SECRET_KEY`` means an attacker can forge sessions and
+    a known admin password means the login form is decoration.
+
+    The check runs in the factory before the Flask object exists, alongside the
+    S1 and S3 checks, so a bad configuration stops startup instead of becoming a
+    running service that silently accepts default credentials.
+
+    The offending **values are never interpolated into the message**. The message
+    has to tell an operator which variable to fix without becoming the place a
+    credential leaks - that includes crash logs, CI output and terminal scrollback
+    where these RuntimeConfigError strings end up.
+
+    ``secret_key`` and ``admin_password`` default to the values the factory is
+    about to configure, so what is validated is exactly what would be used.
+    """
+    if env_name != 'production':
+        # Development and test keep their fallbacks. This is what preserves the
+        # zero-setup local workflow, and why the suite needs no real secrets.
+        return
+
+    if secret_key is None:
+        secret_key = SECRET_KEY
+    if admin_password is None:
+        admin_password = DEFAULT_ADMIN_PASSWORD
+
+    problems = []
+
+    secret = (secret_key or '').strip()
+    if not secret:
+        problems.append('SECRET_KEY is not set')
+    elif secret in PLACEHOLDER_SECRET_KEYS:
+        problems.append(
+            'SECRET_KEY is a built-in development placeholder rather than a '
+            'unique random value'
+        )
+
+    password = (admin_password or '').strip()
+    if not password:
+        problems.append('DEFAULT_ADMIN_PASSWORD is not set')
+    elif password == KNOWN_DEFAULT_ADMIN_PASSWORD:
+        problems.append(
+            'DEFAULT_ADMIN_PASSWORD is the known default password'
+        )
+
+    if problems:
+        raise RuntimeConfigError(
+            "Production startup refused. {} must be fixed before "
+            "EALPR_ENV=production will run: {}. Set real values in the "
+            "environment (see .env.example). The values themselves are never "
+            "echoed here.".format(
+                'These configuration problems' if len(problems) > 1
+                else 'This configuration problem',
+                '; '.join(problems),
+            )
+        )

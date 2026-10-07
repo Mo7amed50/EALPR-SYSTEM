@@ -5,6 +5,8 @@ Usage:
     from ealpr import create_app
     app = create_app()
 """
+import logging
+import re
 import time
 import os
 from datetime import datetime
@@ -17,14 +19,59 @@ from config import (
     SECRET_KEY, MONGODB_URI, MONGODB_DB_NAME, TEMP_DIR, DEFAULT_ADMIN_PASSWORD,
     # RuntimeConfigError is re-exported so callers can catch the startup
     # rejection without importing from the root-level config module.
-    RuntimeConfigError, assert_single_process, resolve_runtime_mode,
+    RuntimeConfigError, assert_single_process, assert_production_secrets,
+    resolve_runtime_mode,
 )
 from ealpr.extensions import login_manager, socketio
+
+log = logging.getLogger(__name__)
+
+#: Matches the ``user:password@`` portion of anything shaped like a connection
+#: string. Startup messages interpolate driver exceptions, and a driver is free
+#: to include the URI it was handed - so redaction happens on the way out, in
+#: one place, rather than relying on each call site to remember.
+_URI_USERINFO = re.compile(r'(?<=://)[^/@\s]+@')
+
+
+def _redact_credentials(text):
+    """Strip ``user:password@`` from anything about to be logged.
+
+    Applied to every startup message that carries an operator-supplied string or
+    an exception. Host names and paths stay: they are operationally useful. Only
+    the credentials are removed.
+    """
+    return _URI_USERINFO.sub('***@', str(text))
+
+
+def _ensure_startup_logging():
+    """Give the application's own logger one handler, once.
+
+    Nothing in this project configured logging before Block C5, so every INFO
+    line - including the worker lifecycle messages C2/C3/C4 already emit - was
+    silently discarded unless a harness was watching. Attaching a single
+    handler to the ``ealpr`` logger makes them observable, and because the
+    handler is scoped to that one logger, third-party loggers keep their own
+    levels: this is not a global logging redesign.
+    """
+    if log.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+        "%(levelname)s: %(name)s: %(message)s"))
+    log.addHandler(handler)
+    # WARNING is the floor that matters. `basicConfig` was deliberately not
+    # used: it would reconfigure the root logger for every dependency too.
+    log.setLevel(logging.INFO)
 
 
 def create_app() -> Flask:
     """Create, configure, and return the Flask application."""
     load_dotenv()
+
+    # ── Block C5 (S6): make the startup path observable ─────────────────────
+    # Installed first so every check below can report through the logger rather
+    # than stdout, including the rejections themselves.
+    _ensure_startup_logging()
 
     # ── Block C5 (S1): resolve the runtime mode before anything else ─────────
     # This runs before the Flask object exists so that a rejected configuration
@@ -39,6 +86,17 @@ def create_app() -> Flask:
     # incorrect rather than merely unsupported. Checked here because this is the
     # one place every entry path (app.py, a WSGI runner, a test) passes through.
     assert_single_process()
+
+    # ── Block C5 (S5): refuse production with placeholder credentials ───────
+    # Placed before the Flask object exists, like the checks above, and it
+    # validates the very values being configured below - not a separately read
+    # copy of them. Development and test are unaffected.
+    assert_production_secrets(
+        runtime_env,
+        secret_key=SECRET_KEY,
+        admin_password=DEFAULT_ADMIN_PASSWORD,
+    )
+    log.info("Starting EALPR in %s mode", runtime_env)
 
     app = Flask(
         __name__,
@@ -180,7 +238,11 @@ def create_app() -> Flask:
         register_atexit_shutdown()
         initialize_inference_jobs(app)
     except Exception as recovery_err:  # pylint: disable=broad-exception-caught
-        print(f"Warning: inference job recovery could not start: {recovery_err}")
+        # WARNING, not ERROR: recovery is best-effort by design and C3.10
+        # requires startup to survive it. The exception text is redacted because
+        # a driver failure can carry the connection string it was given.
+        log.warning("inference job recovery could not start: %s",
+                    _redact_credentials(recovery_err))
 
     return app
 
@@ -194,19 +256,26 @@ def _connect_mongodb(max_retries: int = 3) -> bool:
 
     uri = (MONGODB_URI or "").strip()
     if not uri:
-        print("No MongoDB URI configured. Continuing without DB (read-only mode).")
+        # Degraded, not fatal: C3.10 requires the app to boot read-only.
+        log.warning("No MongoDB URI configured. Continuing without DB "
+                    "(read-only mode).")
         extensions.DB_ENABLED = False
         return False
 
     if not (uri.startswith("mongodb://") or uri.startswith("mongodb+srv://")):
-        print(f"Invalid MongoDB URI format: {uri}. Continuing without DB (read-only mode).")
+        # The URI itself is deliberately not logged. At this point it has failed
+        # a scheme check, so it may be a mistyped credential string rather than
+        # a URL, and echoing it would put a password in the startup log.
+        log.warning("MongoDB URI is missing a mongodb:// or mongodb+srv:// "
+                    "scheme. Continuing without DB (read-only mode).")
         extensions.DB_ENABLED = False
         return False
 
     extensions.DB_ENABLED = False
     for attempt in range(max_retries):
         try:
-            print(f"Connecting to MongoDB (attempt {attempt + 1}/{max_retries})...")
+            log.info("Connecting to MongoDB (attempt %d/%d)...",
+                     attempt + 1, max_retries)
             disconnect(alias="default")
             connect(
                 MONGODB_DB_NAME,
@@ -221,7 +290,7 @@ def _connect_mongodb(max_retries: int = 3) -> bool:
             )
             conn = get_connection(alias="default")
             conn.admin.command("ping")
-            print("MongoDB connected!")
+            log.info("MongoDB connected to database %s.", MONGODB_DB_NAME)
             extensions.DB_ENABLED = True
             return True
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -229,12 +298,16 @@ def _connect_mongodb(max_retries: int = 3) -> bool:
                 disconnect(alias="default")
             except Exception:  # pylint: disable=broad-exception-caught
                 pass
-            print(f"MongoDB attempt {attempt + 1} failed: {e}")
+            # Driver failures frequently quote the URI they were handed, so the
+            # text is redacted before it reaches the log.
+            log.warning("MongoDB attempt %d failed: %s",
+                        attempt + 1, _redact_credentials(e))
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
                 continue
 
-            print("All MongoDB connection attempts failed. Continuing without DB (read-only mode).")
+            log.error("All MongoDB connection attempts failed. Continuing "
+                      "without DB (read-only mode).")
             extensions.DB_ENABLED = False
             return False
 
@@ -257,8 +330,14 @@ def _create_default_admin() -> None:
             )
             admin.set_password(DEFAULT_ADMIN_PASSWORD)
             admin.save()
-            print("Created default admin user.")
+            # Status only. The password itself is never logged, at any level.
+            log.info("Created default admin user.")
             if DEFAULT_ADMIN_PASSWORD == "admin123":
-                print("Warning: change DEFAULT_ADMIN_PASSWORD in production.")
+                log.warning("DEFAULT_ADMIN_PASSWORD is still the development "
+                            "default. Change it before production - S5 refuses "
+                            "to start in production while it is unchanged.")
     except Exception as e:  # pylint: disable=broad-exception-caught
-        print(f"Warning: could not create default admin: {e}")
+        # WARNING: a failed bootstrap leaves the existing account untouched and
+        # does not stop the app booting.
+        log.warning("could not create default admin: %s",
+                    _redact_credentials(e))
