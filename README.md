@@ -88,7 +88,25 @@ Socket.IO runs threaded within that single process (the flask-socketio extension
 
 Deployment status
 
-S2, the production WSGI server selection, is not yet implemented. No production WSGI server is installed or configured. Combined with the single-process requirement above, this application is not production-ready, and this documentation does not claim otherwise. Block C5 delivered runtime mode validation (S1), single-process enforcement (S3), shutdown lifecycle handling (S4), production secret validation (S5), startup logging discipline (S6) and this documentation (S7). Choosing, installing and configuring a production WSGI server remains open work.
+S2, the production WSGI server, is implemented with **Waitress** (3.0.2). Waitress is a threaded WSGI server that runs in the same single process as the Flask application and matches the existing `flask-socketio` threading async mode. The development entry point remains `python app.py`. The production entry point uses the WSGI callable `app:app` via `waitress-serve`.
+
+**Development:**
+```powershell
+python app.py
+```
+
+**Production (binds to loopback by default):**
+```powershell
+waitress-serve --listen=127.0.0.1:5000 --threads=50 app:app
+```
+
+The initial thread count of `50` is a conservative deployment setting, not a benchmarked value. It should be sized appropriately for the expected concurrent load (Socket.IO long-polling requests can hold threads for extended periods, so pool sizing matters).
+
+**Socket.IO transport:** Under Waitress, the WebSocket upgrade is not supported by the current `simple_websocket` integration. Socket.IO clients will negotiate to **HTTP long-polling**. All `live_detection` events remain delivered; WebSocket is not available under this server configuration.
+
+Waitress provides no application-process supervision; process restart must be handled by an external supervisor (systemd, Docker restart policy, Windows Service, etc.). The `atexit` shutdown path runs on normal termination but may be bypassed on SIGTERM (a limitation unchanged from the previous design; C4 recovery handles in-flight jobs on restart). An appropriately configured reverse proxy (nginx, Caddy) is recommended if external access is required.
+
+Block C5 delivered runtime mode validation (S1), single-process enforcement (S3), shutdown lifecycle handling (S4), production secret validation (S5), startup logging discipline (S6), this documentation (S7), and the production WSGI server selection/configuration (S2). Combined with the single-process requirement above, this application is not fully production-ready (remaining work includes rate limiting, ProxyFix if behind a proxy affecting client IP/scheme, dependency hardening, monitoring, and load testing).
 
 All values shown in .env.example are placeholders. Do not commit real credentials.
 

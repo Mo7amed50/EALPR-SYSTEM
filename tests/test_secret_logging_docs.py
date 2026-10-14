@@ -342,23 +342,28 @@ class DocumentationTests(unittest.TestCase):
     def test_documents_state_the_startup_command(self):
         self.assertIn("python app.py", self.readme)
 
-    def test_documents_state_that_s2_is_not_implemented(self):
+    def test_documents_state_that_s2_is_implemented(self):
         self.assertIn("S2", self.readme)
-        self.assertIn("not yet implemented", self.readme)
+        self.assertIn("implemented", self.readme)
 
-    def test_no_production_readiness_is_claimed(self):
-        self.assertIn("not production-ready", self.readme)
+    def test_mentions_production_readiness_limitations(self):
+        # After implementing S2, we no longer claim "not production-ready"
+        # as an absolute; instead we document remaining limitations.
+        self.assertIn("not fully production-ready", self.readme)
 
-    def test_no_wsgi_server_is_documented_as_available(self):
-        forbidden = ("gunicorn", "waitress", "uvicorn", "hypercorn",
-                     "gevent", "eventlet")
+    def test_wsgi_server_is_documented(self):
+        forbidden_other = ("gunicorn", "uvicorn", "hypercorn",
+                           "gevent", "eventlet")
         for document, name in ((self.readme, "README.md"),
-                               (self.env_example, ".env.example")):
+                                (self.env_example, ".env.example")):
             lowered = document.lower()
-            for server in forbidden:
+            # Must document waitress
+            self.assertIn("waitress", lowered,
+                          "{} must document waitress".format(name))
+            for server in forbidden_other:
                 self.assertNotIn(
                     server, lowered,
-                    "{} mentions {}, but S2 is not implemented".format(
+                    "{} mentions {} which was not selected".format(
                         name, server))
 
     def test_env_example_ships_only_placeholders(self):
