@@ -99,6 +99,27 @@ Desktop.ini
 *~
 
 
+# ── AI-assistant / design-tool folders (not part of the application) ─────────
+# Copies of third-party "skills" and prompts (21st.dev, ui-ux-pro-max, brand,
+# slides, ...). ~360 files that have nothing to do with plate recognition.
+.claude/
+.cursor/
+.codex/
+.21st/
+.github/prompts/
+scripts/21st.sh
+
+
+# ── Local scratch, screenshots and runtime sample data ───────────────────────
+# images/ holds large design screenshots; detected_plates/ and temp/ hold real
+# vehicle photos and test output that must never be published.
+images/
+detected_plates/
+temp/
+*.pyc
+__pycache__/
+
+
 # ── Explicitly KEEP (documentation of intent) ────────────────────────────────
 # Application source, spec, and the two runtime model weights must stay
 # versioned. Listed as negations so a broad rule above can never remove them.

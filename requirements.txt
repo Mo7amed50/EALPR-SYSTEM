@@ -1,23 +1,29 @@
-opencv-python>=4.8.0
-numpy>=1.24.0
-# Declared explicitly (Phase 2 / Block B): already present transitively via
-# ultralytics, now imported directly by ealpr/image_thumbnails.py.
-Pillow>=10.0.0
-pytesseract>=0.3.10
-ultralytics>=8.0.0
+# Core web application
 flask>=2.3.0
-flask-sqlalchemy>=3.0.0
 flask-login>=0.6.2
-python-dotenv>=1.0.0
-pandas>=2.0.0
-matplotlib>=3.7.0
-scikit-learn>=1.2.0
-python-dateutil>=2.8.2
-mongoengine>=0.27.0
-dnspython>=2.4.0
-pymongo>=4.5.0
-openpyxl==3.1.2
-python-bidi>=0.4.2
-arabic-reshaper>=3.0.0
 flask-socketio
 waitress==3.0.2
+python-dotenv>=1.0.0
+
+# Database (dnspython is required for mongodb+srv:// Atlas URIs)
+mongoengine>=0.27.0
+pymongo>=4.5.0
+dnspython>=2.4.0
+# models.py imports pytz directly (previously only present via pandas)
+pytz>=2023.3
+# zoneinfo needs tz data on Windows
+tzdata
+
+# Computer vision / detection
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+ultralytics>=8.0.0
+
+# Arabic text rendering and Excel export
+python-bidi>=0.4.2
+arabic-reshaper>=3.0.0
+openpyxl==3.1.2
+
+# Removed because nothing in the code imports them:
+#   pytesseract, flask-sqlalchemy, pandas, matplotlib, scikit-learn, python-dateutil

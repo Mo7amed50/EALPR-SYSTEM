@@ -5,7 +5,7 @@ The system captures live video feeds, detects license plates, recognizes Arabic 
 Features
 
 Real-Time License Plate Detection: Uses a deep learning model (YOLO) to identify and extract license plates from live video streams.
-Character Recognition: Employs EasyOCR to recognize Arabic letters and digits, with preprocessing to handle the complexity of Arabic text.
+Character Recognition: Uses a second YOLO model (a character-level detector with 38 Arabic letter/digit classes) to read the plate, after CLAHE contrast enhancement and denoising of the cropped plate.
 Database Integration: Matches recognized plates with a MongoDB database to retrieve and display vehicle/driver details.
 User-Friendly Interface: Provides live camera feed monitoring, detection history, and visitor management functionalities.
 Scalable Design: Supports potential integration with smart gates, parking systems, and mobile applications.
@@ -13,11 +13,12 @@ Scalable Design: Supports potential integration with smart gates, parking system
 Technologies Used
 
 OpenCV: For video streaming, image processing, and license plate detection.
-EasyOCR: For optical character recognition of Arabic and numeric characters.
 YOLO (Ultralytics): For deep learning-based license plate detection and character recognition.
 MongoDB: For storing and querying vehicle and visitor data.
 Python: Core programming language for system implementation.
-Flask/SQLAlchemy: For backend and database model management (optional relational database support planned for future versions).
+Flask, Flask-Login and Flask-SocketIO: Web backend, authentication and live detection events.
+MongoEngine / PyMongo: Database models for MongoDB Atlas.
+Waitress: Production WSGI server.
 
 Installation
 
@@ -26,23 +27,29 @@ git clone https://github.com/Mo7amed50/EALPR-SYSTEM.git
 cd EALPR-SYSTEM
 
 
-Install Dependencies:Ensure Python 3.8+ is installed, then set up a virtual environment and install required packages:
+Install Dependencies:Ensure Python 3.10+ is installed, then set up a virtual environment and install required packages:
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 
 Set Up Environment Variables:Create a .env file in the project root and configure the following:
+Copy .env.example to .env and fill in your own values. NEVER commit .env: it is
+in .gitignore, and it holds your MongoDB Atlas credentials and SECRET_KEY.
+
+MONGODB_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/ealpr_db?retryWrites=true&w=majority
+MONGODB_DB_NAME=ealpr_db
+SECRET_KEY=<long random value, e.g. python -c "import secrets; print(secrets.token_hex(32))">
 MODEL_PATH=working/runs/detect/yolo_car_plate/weights/best.pt
-OCR_MODEL_PATH=working/runs/detect/yolov8n_car_plate/weights/best.pt
+OCR_MODEL_PATH=working/runs/detect/yolo11m_car_plate/weights/best.pt
 TEMP_DIR=temp
-SAVE_DIR=detected_plates
-TESSERACT_OCR=Path/To/Tesseract/OCR
 
 If MongoDB is unavailable, the app will still launch in offline/read-only mode, but most database operations will be disabled.
 
-Initialize MongoDB:Ensure MongoDB is installed and running. Run the database initialization script:
-python init_database.py
+Model weights:The two .pt files above are stored with Git LFS. After cloning, run "git lfs install" and "git lfs pull" so they are real files and not small pointer stubs.
+
+Initialize MongoDB:Ensure your MongoDB (Atlas) connection works, then run the database initialization script from the project root:
+python -m scripts.init_db
 
 
 Run the Application:Start the Flask server to launch the web interface:
@@ -120,12 +127,16 @@ Search and Reports: Filter detection history by plate number or status, and gene
 
 Project Structure
 
-/working/runs/detect: Contains YOLO model weights for plate detection and OCR.
-/temp: Temporary directory for frame processing.
-/detected_plates: Stores images of detected license plates.
-/app.py: Main Flask application script.
-/init_database.py: Script for MongoDB initialization.
-/config.py: Configuration settings for models and directories.
+/app.py: Development entry point (also exposes the WSGI callable app:app for Waitress).
+/config.py: Configuration, runtime-mode validation and model paths.
+/models.py: MongoEngine models (User, Visitor, DetectionResult, SystemSettings, ...).
+/ealpr: Application package (app factory, blueprints, repositories, inference jobs, AI models).
+/templates, /static: Web interface.
+/scripts: Database utilities. Run them from the project root, e.g. python -m scripts.init_db
+/tests: Test suite. See the notes about test databases before running it.
+/working/runs/detect: YOLO weights (best.pt) for plate detection and OCR (Git LFS).
+/detected_plates, /temp: Created at runtime. Not tracked by git (they contain real vehicle photos).
+/GATE0_BACKUP_PLAN.md, /PHASE2_*.md, /PROJECT_SPEC_FINAL.md: Engineering reports and specification.
 
 Future Work
 
@@ -146,11 +157,10 @@ Supervisor: Dr. Mohammed El-Said
 License
 This project is licensed under the MIT License. See the LICENSE file for details.
 Acknowledgments
-We thank Allah for the strength to complete this project and express gratitude to Dr. Mohammed El-Said for his guidance. Special thanks to the open-source community for tools like OpenCV, EasyOCR, and YOLO.
+We thank Allah for the strength to complete this project and express gratitude to Dr. Mohammed El-Said for his guidance. Special thanks to the open-source community for tools like OpenCV and YOLO.
 References
 
 Ultralytics YOLO Documentation
-Tesseract OCR
 Real-time Egyptian License Plate Detection and Recognition
 EALPR System GitHub
 
